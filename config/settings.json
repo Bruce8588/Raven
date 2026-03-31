@@ -1,0 +1,7 @@
+{
+    "interval": 15,
+    "notify_on_change": true,
+    "output_dir": "output",
+    "ifind_token": "eyJzaWduX3RpbWUiOiIyMDI2LTAzLTMxIDE2OjI1OjEzIn0=.eyJ1aWQiOiI4NTU2ODc3MDciLCJ1c2VyIjp7InJlZnJlc2hUb2tlbkV4cGlyZWRUaW1lIjoiMjAyNi0wNC0yMyAxOTo0MDoyMCIsInVzZXJJZCI6Ijg1NTY4NzcwNyJ9fQ==.23275A37ABF09C93AAF52FC622A017D1027360D63A873D1F428CC3DAEDC02FBB",
+    "token_expire_time": "2026-04-07"
+}

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Raven - 股票趋势追踪</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        /* 嵌入字体，避免加载失败 */
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&display=swap');
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Token过期提示条 -->
+        <div class="token-alert" id="tokenAlert" style="display:none;">
+            <div class="token-alert-content">
+                <span class="token-alert-icon">⚠️</span>
+                <span class="token-alert-msg" id="tokenAlertMsg">iFinD Token已过期，请输入新Token</span>
+            </div>
+            <div class="token-alert-form" id="tokenAlertForm">
+                <input type="text" id="newTokenInput" placeholder="粘贴新的refresh_token..." />
+                <button class="btn-token-submit" onclick="submitNewToken()">保存</button>
+                <button class="btn-token-cancel" onclick="hideTokenAlert()">取消</button>
+            </div>
+            <div class="token-alert-progress" id="tokenAlertProgress" style="display:none;">
+                <span>验证中...</span>
+            </div>
+        </div>
+
+        <!-- 头部 -->
+        <header class="header">
+            <div class="header-left">
+                <h1 class="logo">📈 Raven</h1>
+                <span class="subtitle">股票趋势追踪系统</span>
+            </div>
+            <div class="header-right">
+                <span class="update-time" id="lastUpdate">--</span>
+                <button class="btn-refresh" onclick="refreshAll()" title="刷新数据">🔄</button>
+            </div>
+        </header>
+
+        <!-- 搜索区 -->
+        <section class="search-section">
+            <div class="search-box">
+                <input type="text" id="stockInput" placeholder="输入股票名称或代码..." 
+                       autocomplete="off" onkeydown="if(event.key==='Enter')queryStock()">
+                <button class="btn-query" onclick="queryStock()">查询</button>
+            </div>
+            <div class="auto-refresh">
+                <label>
+                    <input type="checkbox" id="autoRefresh" checked>
+                    <span>自动刷新</span>
+                    <select id="refreshInterval">
+                        <option value="30">30秒</option>
+                        <option value="60" selected>1分钟</option>
+                        <option value="300">5分钟</option>
+                    </select>
+                </label>
+            </div>
+        </section>
+
+        <!-- 查询结果区 -->
+        <section class="result-section" id="resultSection" style="display:none;">
+            <div class="section-title">
+                <span>🔍 查询结果</span>
+                <button class="btn-close" onclick="closeResult()">×</button>
+            </div>
+            <div class="stock-detail" id="stockDetail">
+                <!-- 动态填充 -->
+            </div>
+        </section>
+
+        <!-- 全局提示 -->
+        <div class="toast" id="toast" style="display:none;"></div>
+
+        <!-- 自选股列表 -->
+        <section class="stocks-section">
+            <div class="section-title">
+                <span>📋 自选股列表</span>
+                <span class="stock-count" id="stockCount">--</span>
+            </div>
+            <!-- 第一行：十大趋势 -->
+            <div class="filter-bar">
+                <button class="filter-btn active" data-filter="all" onclick="filterStocks('all')">全部</button>
+                <button class="filter-btn" data-filter="up" onclick="filterStocks('up')">上升趋势</button>
+                <button class="filter-btn" data-filter="up_natural" onclick="filterStocks('up_natural')">自然回撤</button>
+                <button class="filter-btn" data-filter="up_rally" onclick="filterStocks('up_rally')">回升</button>
+                <button class="filter-btn" data-filter="up_secondary" onclick="filterStocks('up_secondary')">次级回撤</button>
+                <button class="filter-btn" data-filter="up_break" onclick="filterStocks('up_break')">上升破碎</button>
+                <button class="filter-btn" data-filter="down" onclick="filterStocks('down')">下跌趋势</button>
+                <button class="filter-btn" data-filter="down_natural" onclick="filterStocks('down_natural')">自然回升</button>
+                <button class="filter-btn" data-filter="down_rally" onclick="filterStocks('down_rally')">回撤</button>
+                <button class="filter-btn" data-filter="down_secondary" onclick="filterStocks('down_secondary')">次级回升</button>
+                <button class="filter-btn" data-filter="down_break" onclick="filterStocks('down_break')">下跌破碎</button>
+            </div>
+            <!-- 第二行：体系分类 -->
+            <div class="filter-bar filter-bar-second">
+                <button class="filter-btn" data-filter="up_system" onclick="filterStocks('up_system')">🔴 上升体系</button>
+                <button class="filter-btn" data-filter="down_system" onclick="filterStocks('down_system')">🟢 下跌体系</button>
+                <button class="filter-btn" data-filter="changed" onclick="filterStocks('changed')">🔔 变化</button>
+            </div>
+            <div class="stocks-grid" id="stocksGrid">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <span>加载中...</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- 页脚 -->
+        <footer class="footer">
+            <span>Raven 股票趋势追踪系统</span>
+            <span id="dataSource">数据来源: iFinD / 模拟</span>
+        </footer>
+    </div>
+
+    <script src="/static/js/main.js"></script>
+</body>
+</html>

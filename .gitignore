@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Cache and data (don't track runtime data)
+cache/
+data/
+output/
+__pycache__/
+*.pyc
+
+# System files
+.DS_Store
+*.swp
+*.swo
+
+# IDE
+.idea/
+.vscode/
+
+# Temporary files
+*.tmp
+*.log
