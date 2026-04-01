@@ -46,13 +46,19 @@ class BackgroundUpdater:
         # 初始化趋势分析器
         if HAS_ANALYZER:
             if config_path is None:
-                config_path = os.path.join(BASE_DIR, "config", "initial", "initial_configs.csv")
+                config_path = os.path.join(BASE_DIR, "config", "initial_configs.csv")
             self.analyzer = MarketTrendAnalyzer(config_path)
         else:
             self.analyzer = None
         
         self.db_dir = os.path.join(BASE_DIR, "data")
         os.makedirs(self.db_dir, exist_ok=True)
+
+        self.output_dir = os.path.join(BASE_DIR, "output")
+        self.trend_judgment_dir = os.path.join(self.output_dir, "趋势判断")
+        self.trend_history_dir = os.path.join(self.output_dir, "趋势历史")
+        os.makedirs(self.trend_judgment_dir, exist_ok=True)
+        os.makedirs(self.trend_history_dir, exist_ok=True)
     
     def _fetch_and_analyze(self, symbol: str) -> dict | None:
         """
@@ -119,7 +125,58 @@ class BackgroundUpdater:
         
         # 趋势分析
         if self.analyzer is not None:
-            result = self.analyzer.update_trend(symbol, float(df.iloc[-1]["close"]))
+            # 构建完整趋势历史：遍历所有分钟数据逐条更新状态
+            state = self.analyzer._init_state_from_config(symbol)
+            records = []
+            for _, row in df.iterrows():
+                high = float(row["high"])
+                low = float(row["low"])
+                state = update_trend(state, high, low)
+                records.append({
+                    "时间": row["day"],
+                    "day": row["day"],
+                    "high": row["high"],
+                    "low": row["low"],
+                    "close": row["close"],
+                    "trend": state["trend"],
+                    "trend_name": TREND_NAMES.get(state["trend"], state["trend"]),
+                    "key_high": state["key_high"],
+                    "key_low": state["key_low"],
+                    "n_low": state["n_low"],
+                    "n_high": state["n_high"],
+                    "rally_high": state["rally_high"],
+                    "rally_low": state["rally_low"],
+                    "secondary_low": state["secondary_low"],
+                    "secondary_high": state["secondary_high"],
+                    "break_low": state["break_low"],
+                    "break_high": state["break_high"],
+                })
+
+            # 取最后一条记录的状态作为当前趋势
+            current_state = records[-1]
+            changed = state["trend"] != self.analyzer._init_state_from_config(symbol)["trend"]
+
+            result = {
+                "stock_code": symbol,
+                "current_price": float(df.iloc[-1]["close"]),
+                "trend": state["trend"],
+                "trend_name": TREND_NAMES.get(state["trend"], state["trend"]),
+                "changed": changed,
+                "key_high": state["key_high"],
+                "key_low": state["key_low"],
+                "n_low": state["n_low"],
+                "n_high": state["n_high"],
+                "rally_high": state["rally_high"],
+                "rally_low": state["rally_low"],
+                "secondary_low": state["secondary_low"],
+                "secondary_high": state["secondary_high"],
+            }
+
+            # 保存趋势判断（当前最新状态）和趋势历史（完整分钟记录）
+            self._save_trend_judgment(symbol, name, code_raw, market,
+                                     float(df.iloc[-1]["close"]), result, records)
+            self._save_trend_history(symbol, records)
+
             if result:
                 trend_code = result.get("trend", "")
                 return {
@@ -156,6 +213,78 @@ class BackgroundUpdater:
         if market in ("SZ", "SH"):
             return f"{code}.{market}"
         return code
+
+    def _save_trend_judgment(self, symbol: str, name: str, code_raw: str, market: str,
+                             price: float, result: dict, records: list):
+        """保存趋势判断文件（当前最新状态）"""
+        if not records:
+            return
+
+        last = records[-1]
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        signal_text, signal_color = self._get_signal_info(result.get("trend", ""))
+
+        trend_judgment_data = {
+            "时间": last["时间"],
+            "代码": code_raw,
+            "名称": name,
+            "市场": market,
+            "当前价格": price,
+            "趋势代码": result.get("trend", ""),
+            "趋势名称": result.get("trend_name", ""),
+            "信号文字": signal_text,
+            "信号颜色": signal_color,
+            "变化标记": "是" if result.get("changed") else "否",
+            "更新时间": now_str,
+            "key_high": result.get("key_high"),
+            "key_low": result.get("key_low"),
+            "n_low": result.get("n_low"),
+            "n_high": result.get("n_high"),
+            "rally_high": result.get("rally_high"),
+            "rally_low": result.get("rally_low"),
+            "secondary_low": result.get("secondary_low"),
+            "secondary_high": result.get("secondary_high"),
+            "break_low": result.get("break_low"),
+            "break_high": result.get("break_high"),
+        }
+
+        df = pd.DataFrame([trend_judgment_data])
+        output_file = os.path.join(self.trend_judgment_dir, f"{symbol}_趋势判断.csv")
+        df.to_csv(output_file, index=False, encoding="utf-8")
+
+    def _save_trend_history(self, symbol: str, records: list):
+        """保存趋势历史文件（追加模式，保留历史）"""
+        if not records:
+            return
+
+        new_df = pd.DataFrame(records)
+        output_file = os.path.join(self.trend_history_dir, f"{symbol}_趋势历史.csv")
+
+        if os.path.exists(output_file):
+            existing_df = pd.read_csv(output_file)
+            # 去重：同一时间戳只保留最新一条
+            combined = pd.concat([existing_df, new_df], ignore_index=True)
+            combined = combined.drop_duplicates(subset=["时间"], keep="last")
+            combined = combined.sort_values("时间").reset_index(drop=True)
+            combined.to_csv(output_file, index=False, encoding="utf-8")
+        else:
+            new_df.to_csv(output_file, index=False, encoding="utf-8")
+
+    def _get_signal_info(self, trend_code: str) -> tuple:
+        """根据趋势代码获取信号文字和颜色"""
+        signal_map = {
+            "up": ("买入", "🔴"),
+            "up_natural": ("卖出", "🟡"),
+            "up_rally": ("买入", "🟢"),
+            "up_secondary": ("卖出", "🟡"),
+            "up_break": ("卖出", "🔵"),
+            "down": ("观望", "⚪"),
+            "down_natural": ("观望", "⚪"),
+            "down_rally": ("买入", "🟢"),
+            "down_secondary": ("观望", "⚪"),
+            "down_break": ("买入", "🔵"),
+        }
+        return signal_map.get(trend_code, ("未知", "⚪"))
     
     def update_all(self):
         """更新所有已搜索股票的数据"""

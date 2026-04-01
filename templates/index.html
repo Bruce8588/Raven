@@ -6,6 +6,35 @@
     <title>Raven - 股票趋势追踪</title>
     <link rel="stylesheet" href="/static/css/style.css">
     <style>
+        /* 标签切换 */
+        .tab-bar {
+            display: flex;
+            gap: 8px;
+            padding: 4px 0;
+        }
+
+        .tab-btn {
+            padding: 8px 20px;
+            border: 1px solid #e5e7eb;
+            background: white;
+            border-radius: 20px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: #6b7280;
+        }
+
+        .tab-btn:hover {
+            border-color: #1a73e8;
+            color: #1a73e8;
+        }
+
+        .tab-btn.active {
+            background: #1a73e8;
+            border-color: #1a73e8;
+            color: white;
+        }
+
         /* 嵌入字体，避免加载失败 */
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&display=swap');
     </style>
@@ -80,6 +109,11 @@
                 <span>📋 自选股列表</span>
                 <span class="stock-count" id="stockCount">--</span>
             </div>
+            <!-- 标签切换 -->
+            <div class="tab-bar" style="margin-bottom:12px;">
+                <button class="tab-btn active" id="tabWatchlist" onclick="switchTab('watchlist')">📋 自选股</button>
+                <button class="tab-btn" id="tabHistory" onclick="switchTab('history')">🕐 历史搜索</button>
+            </div>
             <!-- 第一行：十大趋势 -->
             <div class="filter-bar">
                 <button class="filter-btn active" data-filter="all" onclick="filterStocks('all')">全部</button>
@@ -100,12 +134,9 @@
                 <button class="filter-btn" data-filter="down_system" onclick="filterStocks('down_system')">🟢 下跌体系</button>
                 <button class="filter-btn" data-filter="changed" onclick="filterStocks('changed')">🔔 变化</button>
             </div>
-            <div class="stocks-grid" id="stocksGrid">
-                <div class="loading">
-                    <div class="spinner"></div>
-                    <span>加载中...</span>
-                </div>
-            </div>
+            <div class="stocks-grid" id="stocksGrid"></div>
+            <!-- 历史搜索网格 -->
+            <div class="stocks-grid" id="historyGrid" style="display:none;"></div>
         </section>
 
         <!-- 页脚 -->

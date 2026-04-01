@@ -49,6 +49,21 @@ def load_watchlist():
     return {}
 
 
+def _load_stocks_mapping():
+    """加载股票名称-代码映射表"""
+    # 优先使用全市场映射表（3473只）
+    mapping_path = os.path.join(BASE_DIR, "config", "stocks_name_mapping_full.json")
+    if os.path.exists(mapping_path):
+        with open(mapping_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    # 回退到旧映射表（81只）
+    mapping_path = os.path.join(BASE_DIR, "config", "stocks_name_mapping.json")
+    if os.path.exists(mapping_path):
+        with open(mapping_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
 def get_latest_trend_csv():
     """获取最新的趋势CSV文件"""
     pattern = os.path.join(OUTPUT_DIR, "趋势追踪_*.csv")
@@ -57,6 +72,39 @@ def get_latest_trend_csv():
         return None
     latest = max(files, key=os.path.getmtime)
     return latest
+
+
+def _get_current_trend_from_csv(symbol: str, info: dict) -> dict | None:
+    """
+    从 output/趋势判断/{symbol}_趋势判断.csv 读取当前趋势数据。
+    返回 dict 包含 trend_code, trend_name, key_*, n_*, rally_*, secondary_* 等字段。
+    如果 CSV 不存在或为空则返回 None（此时应使用 cache 作为备用）。
+    """
+    trend_csv_path = os.path.join(OUTPUT_DIR, "趋势判断", f"{symbol}_趋势判断.csv")
+    if not os.path.exists(trend_csv_path):
+        return None
+    try:
+        df = pd.read_csv(trend_csv_path)
+        if df.empty:
+            return None
+        # 取最后一行（最新记录）
+        row = df.iloc[-1]
+        return {
+            "trend_code": str(row.get("趋势代码", "")) if pd.notna(row.get("趋势代码")) else "",
+            "trend_name": str(row.get("趋势名称", "")) if pd.notna(row.get("趋势名称")) else "",
+            "key_high": float(row["key_high"]) if pd.notna(row.get("key_high")) else None,
+            "key_low": float(row["key_low"]) if pd.notna(row.get("key_low")) else None,
+            "n_low": float(row["n_low"]) if pd.notna(row.get("n_low")) else None,
+            "n_high": float(row["n_high"]) if pd.notna(row.get("n_high")) else None,
+            "rally_high": float(row["rally_high"]) if pd.notna(row.get("rally_high")) else None,
+            "rally_low": float(row["rally_low"]) if pd.notna(row.get("rally_low")) else None,
+            "secondary_low": float(row["secondary_low"]) if pd.notna(row.get("secondary_low")) else None,
+            "secondary_high": float(row["secondary_high"]) if pd.notna(row.get("secondary_high")) else None,
+            "update_time": str(row.get("更新时间", "")) if pd.notna(row.get("更新时间")) else "",
+        }
+    except Exception as e:
+        print(f"[_get_current_trend_from_csv] 读取 {symbol} 趋势CSV失败: {e}")
+        return None
 
 
 def load_all_trends():
@@ -79,45 +127,28 @@ def load_all_trends():
 
 
 def get_trend_description(trend_code, price, record):
-    """生成趋势解读"""
-    def fmt(v):
-        if v is None or (isinstance(v, float) and pd.isna(v)):
-            return "无"
-        try:
-            return f"{float(v):.2f}"
-        except:
-            return "无"
-
+    """生成趋势解读（不含关键点代号）"""
     if trend_code == "up":
-        return f"价格处于上升趋势，等待回调后买入机会"
+        return "价格处于上升趋势，等待回调后买入机会"
     elif trend_code == "up_natural":
-        n_low = fmt(record.get('n_low'))
-        return f"自然回撤中，n_low={n_low}，关注是否止跌"
+        return "自然回撤中，关注是否止跌"
     elif trend_code == "up_rally":
-        rally_high = fmt(record.get('rally_high'))
-        return f"回升阶段，rally_high={rally_high}，关注能否突破"
+        return "回升阶段，关注能否突破"
     elif trend_code == "up_secondary":
-        secondary_low = fmt(record.get('secondary_low'))
-        return f"次级回撤，secondary_low={secondary_low}，等待回升信号"
+        return "次级回撤中，等待回升信号"
     elif trend_code == "up_break":
-        break_low = fmt(record.get('key_low'))
-        return f"关键支撑{break_low}已破，注意风险"
+        return "关键支撑已破，注意风险"
     elif trend_code == "down":
-        key_low = fmt(record.get('key_low'))
-        return f"下跌趋势，key_low={key_low}，等待止跌信号"
+        return "下跌趋势，等待止跌信号"
     elif trend_code == "down_natural":
-        n_high = fmt(record.get('n_high'))
-        return f"自然回升中，n_high={n_high}，关注是否突破"
+        return "自然回升中，关注是否突破"
     elif trend_code == "down_rally":
-        rally_low = fmt(record.get('rally_low'))
-        return f"回撤阶段，rally_low={rally_low}，注意风险"
+        return "回撤阶段，注意风险"
     elif trend_code == "down_secondary":
-        secondary_high = fmt(record.get('secondary_high'))
-        return f"次级回升，secondary_high={secondary_high}，关注能否突破"
+        return "次级回升中，关注能否突破"
     elif trend_code == "down_break":
-        break_high = fmt(record.get('key_high'))
-        return f"突破关键阻力{break_high}，趋势可能反转"
-    return "趋势未确定"
+        return "突破关键阻力，趋势可能反转"
+    return ""
 
 
 def get_signal(trend_code):
@@ -170,11 +201,34 @@ def _fetch_stock_unknown(stock_name: str) -> dict | None:
         # 检查是否像股票代码（6位数字）
         is_code = stock_name.isdigit() and len(stock_name) == 6
         
+        # 先尝试按名称查找（从映射表）
+        actual_name = stock_name  # 保存原始输入的名称
+        market_from_mapping = None  # 从映射表获取的market
+        if not is_code:
+            stocks_mapping = _load_stocks_mapping()
+            for code, info in stocks_mapping.items():
+                name = info.get("name", "")
+                if stock_name == name or stock_name in name or name in stock_name:
+                    # 找到匹配的股票，按代码处理
+                    is_code = True
+                    stock_name = code  # 用代码继续
+                    actual_name = name  # 保存实际名称
+                    market_from_mapping = info.get("market")  # 保存market
+                    print(f"[DEBUG] Found in mapping: code={stock_name}, market={market_from_mapping}, name={actual_name}")
+                    break
+        
+        print(f"[DEBUG] After mapping lookup: is_code={is_code}, stock_name={stock_name}, market_from_mapping={market_from_mapping}")
+        
         if is_code:
             code = stock_name
-            # 尝试SH和SZ
-            for market in [("SH", ".SH"), ("SZ", ".SZ")]:
-                market_name, suffix = market
+            # 确定要尝试的市场列表（优先使用映射表的market，但也尝试另一个）
+            if market_from_mapping:
+                other = "SZ" if market_from_mapping == "SH" else "SH"
+                market_list = [(market_from_mapping, f".{market_from_mapping}"), (other, f".{other}")]
+            else:
+                market_list = [("SH", ".SH"), ("SZ", ".SZ")]
+            
+            for market_name, suffix in market_list:
                 try:
                     fetcher = IFinDFetcher()
                     df = fetcher.get_minute_data(f"{code}{suffix}", days=7)
@@ -195,7 +249,7 @@ def _fetch_stock_unknown(stock_name: str) -> dict | None:
                             signal = get_signal(trend_code)
                             return {
                                 "symbol": f"{market_name.lower()}{code}",
-                                "name": f"股票{code}",
+                                "name": actual_name,
                                 "code": code,
                                 "market": market_name,
                                 "price": float(df.iloc[-1]["close"]),
@@ -326,18 +380,44 @@ def _fetch_stock_from_ifind(symbol: str, info: dict) -> dict | None:
         # 使用逐帧分析处理历史数据
         state = init_state(stock_config) if stock_config else init_state({"trend": "up"})
         
-        # 保存历史趋势记录
+        # 保存历史趋势记录（每行只记录一个趋势状态+一个关键点，仅在变化时记录）
+        # 关键点映射：每个趋势对应的关键点字段名
+        TREND_KEYPOINT_MAP = {
+            "up": "key_high",
+            "up_natural": "n_low",
+            "up_rally": "rally_high",
+            "up_secondary": "secondary_low",
+            "up_break": "key_low",
+            "down": "key_low",
+            "down_natural": "n_high",
+            "down_rally": "rally_low",
+            "down_secondary": "secondary_high",
+            "down_break": "key_high",
+        }
+        
         trend_records = []
+        trend_judgment_records = []  # 每分钟一条分析记录
+        prev_trend = None
+        prev_keypoint_value = None
+        prev_day = None
+        
         for _, row in df.iterrows():
             high = float(row["high"])
             low = float(row["low"])
             state = update_trend(state, high, low)
             
-            trend_records.append({
-                "时间": row["day"],
-                "价格": row["close"],
-                "趋势": state["trend"],
-                "趋势名称": TREND_NAMES.get(state["trend"], ""),
+            current_trend = state["trend"]
+            kp_name = TREND_KEYPOINT_MAP.get(current_trend, "")
+            kp_value = state.get(kp_name) if kp_name else None
+            
+            day_str = str(row["day"])
+            
+            # 趋势判断：每行都记录
+            trend_judgment_records.append({
+                "时间": day_str,
+                "当前价格": row["close"],
+                "趋势代码": current_trend,
+                "趋势名称": TREND_NAMES.get(current_trend, ""),
                 "key_high": state.get("key_high"),
                 "key_low": state.get("key_low"),
                 "n_low": state.get("n_low"),
@@ -346,7 +426,23 @@ def _fetch_stock_from_ifind(symbol: str, info: dict) -> dict | None:
                 "rally_low": state.get("rally_low"),
                 "secondary_low": state.get("secondary_low"),
                 "secondary_high": state.get("secondary_high"),
+                "break_low": state.get("break_low"),
+                "break_high": state.get("break_high"),
             })
+            
+            # 仅当趋势变化或关键点变化时记录一行
+            if current_trend != prev_trend or kp_value != prev_keypoint_value:
+                trend_records.append({
+                    "时间": day_str,
+                    "价格": row["close"],
+                    "趋势": current_trend,
+                    "趋势名称": TREND_NAMES.get(current_trend, ""),
+                    "关键点名称": kp_name,
+                    "关键点": kp_value,
+                })
+                prev_trend = current_trend
+                prev_keypoint_value = kp_value
+                prev_day = day_str
         
         # 保存趋势历史到CSV（追加模式）
         output_dir = os.path.join(BASE_DIR, "output", "趋势历史")
@@ -358,14 +454,67 @@ def _fetch_stock_from_ifind(symbol: str, info: dict) -> dict | None:
             existing_df["时间"] = pd.to_datetime(existing_df["时间"])
             trend_df["时间"] = pd.to_datetime(trend_df["时间"])
             trend_df = pd.concat([existing_df, trend_df], ignore_index=True)
-            trend_df = trend_df.drop_duplicates(subset=["时间"], keep="last")
+            # 按时间、趋势、关键点三重去重，保留最后的记录
+            # （同一时间同一趋势可能有不同关键点值变化，都应保留）
+            trend_df = trend_df.drop_duplicates(subset=["时间", "趋势", "关键点名称"], keep="last")
             trend_df = trend_df.sort_values("时间").reset_index(drop=True)
         trend_df.to_csv(trend_file, index=False, encoding="utf-8")
-        
+
+        # 保存趋势判断到CSV（每条分析记录，追加模式）
+        judgment_dir = os.path.join(BASE_DIR, "output", "趋势判断")
+        os.makedirs(judgment_dir, exist_ok=True)
+        judgment_df = pd.DataFrame(trend_judgment_records)
+        judgment_file = os.path.join(judgment_dir, f"{symbol}_趋势判断.csv")
+        if os.path.exists(judgment_file):
+            existing_j = pd.read_csv(judgment_file)
+            existing_j["时间"] = pd.to_datetime(existing_j["时间"])
+            judgment_df["时间"] = pd.to_datetime(judgment_df["时间"])
+            judgment_df = pd.concat([existing_j, judgment_df], ignore_index=True)
+            judgment_df = judgment_df.drop_duplicates(subset=["时间"], keep="last")
+            judgment_df = judgment_df.sort_values("时间").reset_index(drop=True)
+        judgment_df.to_csv(judgment_file, index=False, encoding="utf-8")
+
         # 获取最终趋势
         trend_code = state["trend"]
         signal = get_signal(trend_code)
         current_price = float(df.iloc[-1]["close"])
+
+        # 更新 initial_configs.csv（保存最新趋势状态）
+        config_path = os.path.join(BASE_DIR, "config", "initial_configs.csv")
+        latest_time = df.iloc[-1]["day"] if len(df) > 0 else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        new_row = {
+            "股票代码": config_code,
+            "最新时间": latest_time,
+            "当前价格": current_price,
+            "趋势代码": trend_code,
+            "趋势名称": TREND_NAMES.get(trend_code, ""),
+            "key_high": state.get("key_high"),
+            "key_low": state.get("key_low"),
+            "n_low": state.get("n_low"),
+            "n_high": state.get("n_high"),
+            "rally_high": state.get("rally_high"),
+            "rally_low": state.get("rally_low"),
+            "secondary_low": state.get("secondary_low"),
+            "secondary_high": state.get("secondary_high"),
+            "break_low": state.get("break_low"),
+            "break_high": state.get("break_high"),
+        }
+        if os.path.exists(config_path):
+            try:
+                configs_df = pd.read_csv(config_path)
+                # 更新已有行或追加新行
+                mask = configs_df['股票代码'] == config_code
+                if mask.any():
+                    for col, val in new_row.items():
+                        configs_df.loc[mask, col] = val
+                else:
+                    configs_df = pd.concat([configs_df, pd.DataFrame([new_row])], ignore_index=True)
+                configs_df.to_csv(config_path, index=False, encoding="utf-8")
+            except Exception as e:
+                print(f"[配置表更新失败] {e}")
+        else:
+            # 创建新的配置表
+            pd.DataFrame([new_row]).to_csv(config_path, index=False, encoding="utf-8")
         
         return {
             "name": info.get("name", symbol),
@@ -403,56 +552,165 @@ def index():
 
 @app.route('/api/trends')
 def api_trends():
-    """获取所有股票趋势"""
-    trends = load_all_trends()
+    """获取所有股票趋势（展示全部自选股）"""
+    from core.config.rules import TREND_NAMES
     watchlist = load_watchlist()
+    cache_data = stock_cache.get_all()
+    searched = set(stock_cache.get_searched())
+
+    # 从 initial_configs.csv 读取上次记录的趋势状态（用于判断是否变化）
+    prev_trend_map = {}
+    config_path = os.path.join(BASE_DIR, "config", "initial_configs.csv")
+    if os.path.exists(config_path):
+        try:
+            configs_df = pd.read_csv(config_path)
+            for _, row in configs_df.iterrows():
+                code = str(row.get('股票代码', ''))
+                prev_trend_map[code] = {
+                    '趋势代码': row.get('趋势代码', ''),
+                    '当前价格': row.get('当前价格', 0),
+                    '时间': str(row.get('最新时间', '')),
+                }
+        except Exception as e:
+            print(f"[api/trends] 读取配置失败: {e}")
 
     result = []
-    for t in trends:
-        symbol = t.get('股票代码', '')
-        # 从watchlist获取名称
-        name = symbol
-        if symbol in watchlist:
-            name = watchlist[symbol].get('name', symbol)
-        elif symbol.startswith('sh') or symbol.startswith('sz'):
-            # 尝试从ALL_STOCKS匹配
-            code = symbol[2:]
-            for k, v in watchlist.items():
-                if v.get('code') == code:
-                    name = v.get('name', symbol)
-                    break
+    for symbol, info in watchlist.items():
+        cache_record = cache_data.get(symbol, {})
+        # 配置表格式: "002129SZ", 自选股symbol格式: "sh002129"
+        # 需要转换为配置表格式才能正确匹配
+        stock_code = info.get('code', '')
+        market = info.get('market', '')
+        config_key = f"{stock_code}{market}"  # e.g. "002129SZ"
+        prev_config = prev_trend_map.get(config_key, {})
 
-        signal = get_signal(t.get('趋势代码', ''))
-        result.append({
-            "symbol": symbol,
-            "name": name,
-            "price": float(t.get('当前价格', 0)),
-            "trend_code": t.get('趋势代码', ''),
-            "trend_name": t.get('趋势名称', ''),
-            "signal_text": signal['text'],
-            "signal_color": signal['color'],
-            "key_high": t.get('key_high'),
-            "key_low": t.get('key_low'),
-            "n_low": t.get('n_low'),
-            "n_high": t.get('n_high'),
-            "rally_high": t.get('rally_high'),
-            "rally_low": t.get('rally_low'),
-            "secondary_low": t.get('secondary_low'),
-            "secondary_high": t.get('secondary_high'),
-            "description": get_trend_description(t.get('趋势代码', ''), t.get('当前价格', 0), t),
-            "changed": t.get('是否变化', '否') == '是',
-            "update_time": str(t.get('时间', '')),
-        })
+        # 优先从趋势判断CSV读取当前趋势数据
+        csv_trend = _get_current_trend_from_csv(symbol, info)
+        prev_trend = prev_config.get('趋势代码', '')
 
-    # 补充缓存中已搜索但不在CSV中的股票
-    cache_data = stock_cache.get_all()
-    cache_symbols_in_result = {r["symbol"] for r in result}
+        if csv_trend and csv_trend.get('trend_code'):
+            # CSV 存在且有数据，使用 CSV（趋势数据的唯一真实数据源）
+            trend_code = csv_trend['trend_code']
+            signal = get_signal(trend_code)
+            curr_trend = trend_code
+            changed = curr_trend != prev_trend and prev_trend != ''
+            result.append({
+                "symbol": symbol,
+                "name": info.get('name', symbol),
+                "code": info.get('code', ''),
+                "market": info.get('market', ''),
+                "price": cache_record.get('price', 0) if cache_record else 0,
+                "trend_code": trend_code,
+                "trend_name": csv_trend.get('trend_name', ''),
+                "signal_text": signal['text'],
+                "signal_color": signal['color'],
+                "key_high": csv_trend.get('key_high'),
+                "key_low": csv_trend.get('key_low'),
+                "n_low": csv_trend.get('n_low'),
+                "n_high": csv_trend.get('n_high'),
+                "rally_high": csv_trend.get('rally_high'),
+                "rally_low": csv_trend.get('rally_low'),
+                "secondary_low": csv_trend.get('secondary_low'),
+                "secondary_high": csv_trend.get('secondary_high'),
+                "description": get_trend_description(trend_code, cache_record.get('price', 0) if cache_record else 0, csv_trend),
+                "changed": changed,
+                "update_time": csv_trend.get('update_time', ''),
+                "from_cache": False,
+                "has_trend_data": True,
+            })
+        elif cache_record and cache_record.get('trend_code'):
+            # CSV 无数据，使用缓存（搜索过的股票有完整趋势数据）
+            signal = get_signal(cache_record.get('trend_code', ''))
+            curr_trend = cache_record.get('trend_code', '')
+            changed = curr_trend != prev_trend and prev_trend != ''
+            result.append({
+                "symbol": symbol,
+                "name": info.get('name', symbol),
+                "code": info.get('code', ''),
+                "market": info.get('market', ''),
+                "price": cache_record.get('price', 0),
+                "trend_code": cache_record.get('trend_code', ''),
+                "trend_name": cache_record.get('trend_name', ''),
+                "signal_text": signal['text'],
+                "signal_color": signal['color'],
+                "key_high": cache_record.get('key_high'),
+                "key_low": cache_record.get('key_low'),
+                "n_low": cache_record.get('n_low'),
+                "n_high": cache_record.get('n_high'),
+                "rally_high": cache_record.get('rally_high'),
+                "rally_low": cache_record.get('rally_low'),
+                "secondary_low": cache_record.get('secondary_low'),
+                "secondary_high": cache_record.get('secondary_high'),
+                "description": cache_record.get('description', ''),
+                "changed": changed,
+                "update_time": cache_record.get('update_time', ''),
+                "from_cache": True,
+                "has_trend_data": True,
+            })
+        else:
+            # 无缓存数据的自选股：尝试从 initial_configs 读取
+            prev_data = prev_config or {}
+            prev_trend_code = prev_data.get('趋势代码', '')
+            if prev_trend_code:
+                signal = get_signal(prev_trend_code)
+                result.append({
+                    "symbol": symbol,
+                    "name": info.get('name', symbol),
+                    "code": info.get('code', ''),
+                    "market": info.get('market', ''),
+                    "price": float(prev_data.get('当前价格', 0)) or 0,
+                    "trend_code": prev_trend_code,
+                    "trend_name": TREND_NAMES.get(prev_trend_code, prev_trend_code),
+                    "signal_text": signal['text'],
+                    "signal_color": signal['color'],
+                    "key_high": None,
+                    "key_low": None,
+                    "n_low": None,
+                    "n_high": None,
+                    "rally_high": None,
+                    "rally_low": None,
+                    "secondary_low": None,
+                    "secondary_high": None,
+                    "description": get_trend_description(prev_trend_code, prev_data.get('当前价格', 0), prev_data),
+                    "changed": False,
+                    "update_time": prev_data.get('时间', ''),
+                    "has_trend_data": True,
+                })
+            else:
+                # 完全无数据
+                result.append({
+                    "symbol": symbol,
+                    "name": info.get('name', symbol),
+                    "code": info.get('code', ''),
+                    "market": info.get('market', ''),
+                    "price": 0,
+                    "trend_code": '',
+                    "trend_name": '暂无趋势数据',
+                    "signal_text": '待分析',
+                    "signal_color": '#9ca3af',
+                    "key_high": None,
+                    "key_low": None,
+                    "n_low": None,
+                    "n_high": None,
+                    "rally_high": None,
+                    "rally_low": None,
+                    "secondary_low": None,
+                    "secondary_high": None,
+                    "description": '暂无趋势数据，请先搜索该股票',
+                    "changed": False,
+                    "update_time": '',
+                    "has_trend_data": False,
+                })
+
+    # 补充：缓存中已搜索但不在自选股的股票
     for symbol, entry in cache_data.items():
-        if symbol not in cache_symbols_in_result:
+        if symbol not in watchlist:
             signal = get_signal(entry.get('trend_code', ''))
             result.append({
                 "symbol": symbol,
                 "name": entry.get('name', symbol),
+                "code": entry.get('code', ''),
+                "market": entry.get('market', ''),
                 "price": entry.get('price', 0),
                 "trend_code": entry.get('trend_code', ''),
                 "trend_name": entry.get('trend_name', ''),
@@ -470,6 +728,7 @@ def api_trends():
                 "changed": False,
                 "update_time": entry.get('update_time', ''),
                 "from_cache": True,
+                "has_trend_data": bool(entry.get('trend_code')),
             })
 
     return jsonify(clean_nan(result))
@@ -505,6 +764,10 @@ def query():
         # 自选股中没有，尝试从iFind获取（作为新的股票）
         result = _fetch_stock_unknown(stock_name)
         if result:
+            # 将搜索结果写入缓存和历史记录
+            result_symbol = result.get("symbol", stock_name)
+            stock_cache.set(result_symbol, result)
+            stock_cache.add_searched(result_symbol)
             return jsonify(clean_nan(result))
         return jsonify({"error": f"未找到股票: {stock_name}", "matches": []}), 404
 
@@ -520,6 +783,8 @@ def query():
     # Step 1: 检查缓存（只有缓存有效时才使用）
     cached = stock_cache.get(symbol)
     if cached is not None and cached.get('trend_code'):
+        # 确保搜索记录写入 searched_stocks.json
+        stock_cache.add_searched(symbol)
         signal = get_signal(cached.get('trend_code', ''))
         return jsonify(clean_nan({
             "symbol": symbol,
@@ -834,6 +1099,342 @@ def api_cache_clear():
         stock_cache.clear_all()
         return jsonify({"errorcode": 0, "errmsg": "缓存已清空"})
     except Exception as e:
+        return jsonify({"errorcode": 1, "errmsg": str(e)}), 500
+
+
+@app.route('/trend_detail/<symbol>')
+def trend_detail_page(symbol):
+    """趋势详情页"""
+    return render_template('trend_detail.html', symbol=symbol)
+
+
+@app.route('/api/history')
+def api_history():
+    """获取历史搜索列表（仅从searched_stocks.json，只包含真正被搜索过的股票）"""
+    try:
+        # 只从 searched_stocks.json 读取，不要混入 watchlist 数据
+        searched = stock_cache.get_searched()
+        cache_data = stock_cache.get_all()
+
+        result = []
+        for symbol in searched:
+            # 只从 cache 读取数据（cache 在 /query 时写入）
+            # 不从 watchlist 补全，避免自选股混入历史记录
+            cache_entry = cache_data.get(symbol, {})
+
+            # 如果 cache 里没有该 symbol 的数据（从未被成功搜索），跳过
+            if not cache_entry:
+                continue
+
+            name = cache_entry.get('name') or symbol
+            code = cache_entry.get('code') or ''
+            market = cache_entry.get('market') or ''
+            price = cache_entry.get('price', 0)
+            trend_code = cache_entry.get('trend_code', '')
+            trend_name = cache_entry.get('trend_name', '')
+            signal = get_signal(trend_code)
+
+            result.append({
+                "symbol": symbol,
+                "name": name,
+                "code": code,
+                "market": market,
+                "price": price,
+                "trend_code": trend_code,
+                "trend_name": trend_name,
+                "signal_text": signal['text'],
+                "signal_color": signal['color'],
+                "has_detail": os.path.exists(os.path.join(BASE_DIR, "output", "趋势历史", f"{symbol}_趋势历史.csv")),
+            })
+
+        return jsonify(clean_nan({
+            "errorcode": 0,
+            "total": len(result),
+            "history": result,
+        }))
+    except Exception as e:
+        return jsonify({"errorcode": 1, "errmsg": str(e)}), 500
+
+
+@app.route('/api/trend_detail/<symbol>')
+def api_trend_detail(symbol):
+    """获取某只股票的趋势详情历史（从趋势历史CSV读取，按Excel格式返回）"""
+    try:
+        watchlist = load_watchlist()
+        cache_data = stock_cache.get_all()
+
+        info = watchlist.get(symbol, {})
+        cache_entry = cache_data.get(symbol, {})
+
+        # 基本信息
+        name = info.get('name') or cache_entry.get('name') or symbol
+        code = info.get('code') or cache_entry.get('code') or ''
+        market = info.get('market') or cache_entry.get('market') or ''
+        current_price = cache_entry.get('price', 0)
+
+        # 优先从趋势判断 CSV 读取当前趋势，cache 只作为备用
+        csv_trend = _get_current_trend_from_csv(symbol, info)
+        if csv_trend and csv_trend.get('trend_code'):
+            current_trend_code = csv_trend['trend_code']
+            current_trend_name = csv_trend['trend_name']
+        else:
+            current_trend_code = cache_entry.get('trend_code', '')
+            current_trend_name = cache_entry.get('trend_name', '')
+        signal = get_signal(current_trend_code)
+
+        # ========== 配置信息：从 initial_configs.csv 读取 ==========
+        config_info = {}
+        config_path = os.path.join(BASE_DIR, "config", "initial_configs.csv")
+        if os.path.exists(config_path):
+            try:
+                configs_df = pd.read_csv(config_path)
+                # 转换 symbol 为 config_code 格式：sh000333 -> 000333SH
+                market_upper = market.upper() if market else None
+                if market_upper:
+                    raw_code = code if code else symbol.replace('sh', '').replace('sz', '')
+                    config_key = f"{raw_code}{market_upper}"
+                else:
+                    config_key = symbol.upper().replace('SH', 'SH').replace('SZ', 'SZ')
+                
+                config_row = configs_df[configs_df['股票代码'] == config_key]
+                if not config_row.empty:
+                    row = config_row.iloc[0]
+                    config_info = {
+                        "config_date": str(row.get('最新时间', ''))[:10] if pd.notna(row.get('最新时间')) else None,
+                        "config_trend": row.get('趋势代码', ''),
+                        "config_trend_name": row.get('趋势名称', ''),
+                        "key_high": row.get('key_high'),
+                        "key_low": row.get('key_low'),
+                        "n_high": row.get('n_high'),
+                        "n_low": row.get('n_low'),
+                        "rally_high": row.get('rally_high'),
+                        "rally_low": row.get('rally_low'),
+                        "secondary_high": row.get('secondary_high'),
+                        "secondary_low": row.get('secondary_low'),
+                        "break_high": row.get('break_high'),
+                        "break_low": row.get('break_low'),
+                    }
+            except Exception as e:
+                print(f"[trend_detail] 读取配置信息失败: {e}")
+
+        # ========== 每分钟数据 ==========
+        minute_records = []
+        if code and market:
+            min_data_path = os.path.join(BASE_DIR, "data", f"{symbol}_{code}_min1.csv")
+            if os.path.exists(min_data_path):
+                try:
+                    min_df = pd.read_csv(min_data_path)
+                    min_df['day'] = pd.to_datetime(min_df['day'], errors='coerce')
+                    min_df = min_df.sort_values('day', ascending=True).reset_index(drop=True)
+                    # 过滤掉 config_info.config_date 之前的数据
+                    if config_info.get('config_date'):
+                        config_dt = pd.to_datetime(config_info['config_date'], errors='coerce')
+                        if pd.notna(config_dt):
+                            min_df = min_df[min_df['day'] >= config_dt]
+                    # 只保留最后 500 条（避免数据量过大）
+                    if len(min_df) > 500:
+                        min_df = min_df.iloc[-500:]
+                    for _, row in min_df.iterrows():
+                        minute_records.append({
+                            "time": str(row.get('day', '')),
+                            "open": float(row['open']) if pd.notna(row.get('open')) else None,
+                            "high": float(row['high']) if pd.notna(row.get('high')) else None,
+                            "low": float(row['low']) if pd.notna(row.get('low')) else None,
+                            "close": float(row['close']) if pd.notna(row.get('close')) else None,
+                            "volume": float(row['volume']) if pd.notna(row.get('volume')) else None,
+                        })
+                except Exception as e:
+                    print(f"[trend_detail] 读取分钟数据失败: {e}")
+
+        # 趋势类型 → Excel列名 映射
+        TREND_TO_COLUMN = {
+            "up": "上升趋势",
+            "up_natural": "自然回撤",
+            "up_rally": "回升",
+            "up_secondary": "次级回撤",
+            "down": "下跌趋势",
+            "down_natural": "自然回升",
+            "down_rally": "回撤",
+            "down_secondary": "次级回升",
+        }
+        # 趋势类型 → 关键点字段名 映射
+        TREND_TO_KEYPOINT = {
+            "up": "key_high",
+            "up_natural": "n_low",
+            "up_rally": "rally_high",
+            "up_secondary": "secondary_low",
+            "down": "key_low",
+            "down_natural": "n_high",
+            "down_rally": "rally_low",
+            "down_secondary": "secondary_high",
+        }
+        # 关键点字段名 → Excel列名（反向映射）
+        KEYPOINT_TO_COLUMN = {v: k for k, v in TREND_TO_COLUMN.items()}
+        KEYPOINT_TO_COLUMN.update({v: k for k, v in TREND_TO_KEYPOINT.items()})
+
+        def kp_to_col(kp_name):
+            """将关键点字段名转为Excel列名"""
+            return KEYPOINT_TO_COLUMN.get(kp_name, kp_name)
+
+        def trend_to_col(trend_code):
+            """将趋势代码转为Excel列名"""
+            return TREND_TO_COLUMN.get(trend_code, "")
+
+        # 尝试读取趋势历史CSV（优先），否则读趋势判断CSV
+        trend_history_path = os.path.join(BASE_DIR, "output", "趋势历史", f"{symbol}_趋势历史.csv")
+        trend_judge_path = os.path.join(BASE_DIR, "output", "趋势判断", f"{symbol}_趋势判断.csv")
+
+        records = []
+        if os.path.exists(trend_history_path):
+            # 检测 CSV 格式：新格式(时间,价格,趋势,趋势名称,关键点名称,关键点) 或 旧格式(时间,day,high,low,close,trend,trend_name,key_high,...)
+            df = pd.read_csv(trend_history_path)
+            df['时间_dt'] = pd.to_datetime(df['时间'], errors='coerce')
+            df = df.sort_values('时间_dt', ascending=True).reset_index(drop=True)
+
+            has_full_kp = 'key_high' in df.columns or 'trend' in df.columns
+            if has_full_kp:
+                # 旧格式：每分钟完整数据，包含 trend, key_high 等全部字段
+                prev_trend = None
+                for _, row in df.iterrows():
+                    trend_code = str(row.get('trend', ''))
+                    time_str = str(row.get('时间', ''))[:16]
+                    close_price = float(row['close']) if pd.notna(row.get('close')) else None
+                    key_high = float(row['key_high']) if pd.notna(row.get('key_high')) else None
+                    key_low = float(row['key_low']) if pd.notna(row.get('key_low')) else None
+                    n_low = float(row['n_low']) if pd.notna(row.get('n_low')) else None
+                    n_high = float(row['n_high']) if pd.notna(row.get('n_high')) else None
+                    rally_high = float(row['rally_high']) if pd.notna(row.get('rally_high')) else None
+                    rally_low = float(row['rally_low']) if pd.notna(row.get('rally_low')) else None
+                    secondary_low = float(row['secondary_low']) if pd.notna(row.get('secondary_low')) else None
+                    secondary_high = float(row['secondary_high']) if pd.notna(row.get('secondary_high')) else None
+                    rec = {
+                        "time": time_str, "trend_code": trend_code,
+                        "trend_name": str(row.get('trend_name', '')),
+                        "close": close_price,
+                        "上升趋势": key_high, "自然回撤": n_low, "回升": rally_high,
+                        "次级回撤": secondary_low, "下跌趋势": key_low, "自然回升": n_high,
+                        "回撤": rally_low, "次级回升": secondary_high,
+                        "ratio": None,
+                        "remark": str(row.get('trend_name', '')),
+                    }
+                    records.append(rec)
+            else:
+                # 新格式：关键点变化记录（时间,价格,趋势,趋势名称,关键点名称,关键点）
+                KEYPOINT_CN = {
+                    'key_high': '上升趋势', 'key_low': '下跌趋势',
+                    'n_low': '自然回撤', 'n_high': '自然回升',
+                    'rally_high': '回升', 'rally_low': '回撤',
+                    'secondary_low': '次级回撤', 'secondary_high': '次级回升',
+                }
+                prev_kp_value = None
+                for _, row in df.iterrows():
+                    trend_code = str(row.get('趋势', ''))
+                    kp_name = str(row.get('关键点名称', ''))
+                    kp_value = float(row['关键点']) if pd.notna(row.get('关键点')) else None
+                    price = float(row['价格']) if pd.notna(row.get('价格')) else None
+                    time_str = str(row.get('时间', ''))[:16]
+                    ratio = None
+                    if kp_value is not None and prev_kp_value and prev_kp_value != 0:
+                        ratio = round(kp_value / prev_kp_value, 3)
+                    kp_cn = KEYPOINT_CN.get(kp_name, kp_name)
+                    rec = {
+                        "time": time_str, "trend_code": trend_code,
+                        "trend_name": str(row.get('趋势名称', '')),
+                        "close": price,
+                        "上升趋势": None, "自然回撤": None, "回升": None,
+                        "次级回撤": None, "下跌趋势": None, "自然回升": None,
+                        "回撤": None, "次级回升": None,
+                        "ratio": ratio, "remark": kp_cn,
+                    }
+                    if kp_cn in rec and kp_value is not None:
+                        rec[kp_cn] = kp_value
+                    records.append(rec)
+                    if kp_value is not None:
+                        prev_kp_value = kp_value
+
+        if not records and os.path.exists(trend_judge_path):
+            # 趋势判断CSV格式：时间,当前价格,趋势代码,趋势名称,key_high,key_low,...
+            df = pd.read_csv(trend_judge_path)
+            df['时间_dt'] = pd.to_datetime(df['时间'], errors='coerce')
+            df = df.sort_values('时间_dt', ascending=True).reset_index(drop=True)
+
+            # 只保留趋势变化的关键记录
+            prev_trend = None
+            for _, row in df.iterrows():
+                trend_code = str(row.get('趋势代码', ''))
+                if trend_code == prev_trend:
+                    continue  # 跳过同一趋势的连续记录
+                prev_trend = trend_code
+
+                time_str = str(row.get('时间', ''))[:10]
+                price = float(row.get('当前价格', 0)) if pd.notna(row.get('当前价格')) else 0
+
+                # 提取各关键点
+                key_high = float(row['key_high']) if pd.notna(row.get('key_high')) else None
+                key_low = float(row['key_low']) if pd.notna(row.get('key_low')) else None
+                n_low = float(row['n_low']) if pd.notna(row.get('n_low')) else None
+                n_high = float(row['n_high']) if pd.notna(row.get('n_high')) else None
+                rally_high = float(row['rally_high']) if pd.notna(row.get('rally_high')) else None
+                rally_low = float(row['rally_low']) if pd.notna(row.get('rally_low')) else None
+                secondary_low = float(row['secondary_low']) if pd.notna(row.get('secondary_low')) else None
+                secondary_high = float(row['secondary_high']) if pd.notna(row.get('secondary_high')) else None
+
+                rec = {
+                    "time": time_str,
+                    "上升趋势": key_high,
+                    "自然回撤": n_low,
+                    "回升": rally_high,
+                    "次级回撤": secondary_low,
+                    "下跌趋势": key_low,
+                    "自然回升": n_high,
+                    "回撤": rally_low,
+                    "次级回升": secondary_high,
+                    "ratio": None,
+                    "remark": TREND_TO_COLUMN.get(trend_code, ''),
+                }
+                records.append(rec)
+
+        if records:
+            return jsonify(clean_nan({
+                "errorcode": 0,
+                "symbol": symbol,
+                "name": name,
+                "code": code,
+                "market": market,
+                "current_price": current_price,
+                "current_trend_code": current_trend_code,
+                "current_trend_name": current_trend_name,
+                "signal_text": signal['text'],
+                "signal_color": signal['color'],
+                "config_info": config_info,
+                "total_records": len(records),
+                "records": records,
+                "minute_records": minute_records,
+                "minute_total": len(minute_records),
+            }))
+        else:
+            return jsonify(clean_nan({
+                "errorcode": 1,
+                "errmsg": f"暂无趋势历史数据: {symbol}",
+                "symbol": symbol,
+                "name": name,
+                "code": code,
+                "market": market,
+                "current_price": current_price,
+                "current_trend_code": current_trend_code,
+                "current_trend_name": current_trend_name,
+                "signal_text": signal['text'],
+                "signal_color": signal['color'],
+                "config_info": config_info,
+                "total_records": 0,
+                "records": [],
+                "minute_records": minute_records,
+                "minute_total": len(minute_records),
+            }))
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"errorcode": 1, "errmsg": str(e)}), 500
 
 

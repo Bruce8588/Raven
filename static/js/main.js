@@ -4,6 +4,20 @@
 
 // 全局状态
 let allStocks = [];
+
+// 趋势代码 → 点评文字
+const TREND_DESC = {
+    'up': '进行中的单向运动',
+    'up_natural': '正常反弹',
+    'up_rally': '可能突破',
+    'up_secondary': '无意义的运动',
+    'up_break': '趋势可能反转',
+    'down': '进行中的单向运动',
+    'down_natural': '正常反弹',
+    'down_rally': '可能突破',
+    'down_secondary': '无意义的运动',
+    'down_break': '趋势可能反转',
+};
 let currentFilter = 'all';
 let autoRefreshTimer = null;
 let lastFetchTime = null;
@@ -212,61 +226,7 @@ function showResult(data) {
 
     // 根据趋势类型确定显示哪些关键点（根据趋势体系详解文档）
     const trendCode = data.trend_code;
-    let keypoints = '';
-
-    if (trendCode === 'up') {
-        // 上升趋势：关键高点
-        keypoints = `${renderKeypoint('key_high', data.key_high)}`;
-    } else if (trendCode === 'up_natural') {
-        // 自然回撤：自然回撤低点
-        keypoints = `${renderKeypoint('n_low', data.n_low)}`;
-    } else if (trendCode === 'up_rally') {
-        // 回升：自然回撤低点、关键高点、回升高点
-        keypoints = `
-            ${renderKeypoint('n_low', data.n_low)}
-            ${renderKeypoint('key_high', data.key_high)}
-            ${renderKeypoint('rally_high', data.rally_high)}
-        `;
-    } else if (trendCode === 'up_secondary') {
-        // 次级回撤：自然回撤低点、回升高点、次级回撤低点
-        keypoints = `
-            ${renderKeypoint('n_low', data.n_low)}
-            ${renderKeypoint('rally_high', data.rally_high)}
-            ${renderKeypoint('secondary_low', data.secondary_low)}
-        `;
-    } else if (trendCode === 'up_break') {
-        // 上升破碎：自然回撤低点、破碎低点
-        keypoints = `
-            ${renderKeypoint('n_low', data.n_low)}
-            ${renderKeypoint('break_low', data.break_low)}
-        `;
-    } else if (trendCode === 'down') {
-        // 下跌趋势：关键低点
-        keypoints = `${renderKeypoint('key_low', data.key_low)}`;
-    } else if (trendCode === 'down_natural') {
-        // 自然回升：自然回升高点
-        keypoints = `${renderKeypoint('n_high', data.n_high)}`;
-    } else if (trendCode === 'down_rally') {
-        // 回撤：自然回升高点、关键低点、回撤低点
-        keypoints = `
-            ${renderKeypoint('n_high', data.n_high)}
-            ${renderKeypoint('key_low', data.key_low)}
-            ${renderKeypoint('rally_low', data.rally_low)}
-        `;
-    } else if (trendCode === 'down_secondary') {
-        // 次级回升：自然回升高点、回撤低点、次级回升高点
-        keypoints = `
-            ${renderKeypoint('n_high', data.n_high)}
-            ${renderKeypoint('rally_low', data.rally_low)}
-            ${renderKeypoint('secondary_high', data.secondary_high)}
-        `;
-    } else if (trendCode === 'down_break') {
-        // 下跌破碎：自然回升高点、破碎高点
-        keypoints = `
-            ${renderKeypoint('n_high', data.n_high)}
-            ${renderKeypoint('break_high', data.break_high)}
-        `;
-    }
+    let keypoints = '';  // 搜索结果中不展示关键点小卡片区，留空
 
     detail.innerHTML = `
         <div class="detail-header">
@@ -275,7 +235,7 @@ function showResult(data) {
                 <div class="detail-code">${data.code || ''} ${data.market === 'SZ' ? '深圳' : data.market === 'SH' ? '上海' : ''}</div>
             </div>
             <div class="detail-signal" style="background:${data.signal_color}">
-                ${data.signal_text}
+                ${TREND_DESC[data.trend_code] || data.signal_text}
             </div>
         </div>
         <div class="detail-main">
@@ -285,9 +245,6 @@ function showResult(data) {
             </div>
         </div>
         <div class="detail-desc">${data.description || ''}</div>
-        <div class="detail-keypoints">
-            ${keypoints}
-        </div>
         <div style="margin-top:12px;font-size:12px;color:#999;">
             ${data.changed ? '🔔 趋势刚发生变化' : ''} 更新时间: ${data.update_time || '--'}
         </div>
@@ -364,19 +321,22 @@ function renderStocks() {
         const updated = stock.update_time ? stock.update_time.replace('2026-', '').replace('03-', '03/') : '--';
         const borderColor = stock.signal_color || (isUp ? 'var(--up-color)' : 'var(--down-color)');
 
+        const hasDetail = stock.has_trend_data !== false;
+
         return `
-            <div class="stock-card ${cardClass}" style="border-left-color: ${borderColor}" onclick="showResultFromList('${stock.symbol}')">
+            <div class="stock-card ${cardClass}" style="border-left-color: ${borderColor}" onclick="goToDetail('${stock.symbol}')">
                 ${stock.changed ? '<span class="changed-badge">变化</span>' : ''}
                 <div class="stock-card-header">
                     <div>
-                        <div class="stock-name">${stock.name}</div>
+                        <div class="stock-name" style="cursor:pointer;" onclick="event.stopPropagation(); goToDetail('${stock.symbol}')">${stock.name}</div>
                         <div class="stock-code">${stock.symbol}</div>
                     </div>
+                    
                 </div>
                 <div class="stock-price ${priceClass}">¥${stock.price > 0 ? stock.price.toFixed(2) : '--'}</div>
                 <div class="stock-trend">
                     <span class="trend-name">${stock.trend_name || '未知'}</span>
-                    <span class="trend-signal" style="background:${stock.signal_color}">${stock.signal_text}</span>
+                    <span class="trend-signal" style="background:${stock.signal_color}">${TREND_DESC[stock.trend_code] || stock.signal_text}</span>
                 </div>
                 <div class="stock-updated">${updated}</div>
             </div>
@@ -415,19 +375,21 @@ function filterStocksByNames(names) {
         const isUp = stock.trend_code.startsWith('up');
         const priceClass = isUp ? 'up' : 'down';
         const cardClass = stock.changed ? 'changed' : (isUp ? 'up' : 'down');
+        const hasDetail = stock.has_trend_data !== false;
         return `
-            <div class="stock-card ${cardClass}" onclick="showResultFromList('${stock.symbol}')">
+            <div class="stock-card ${cardClass}" onclick="goToDetail('${stock.symbol}')">
                 ${stock.changed ? '<span class="changed-badge">变化</span>' : ''}
                 <div class="stock-card-header">
                     <div>
-                        <div class="stock-name">${stock.name}</div>
+                        <div class="stock-name" style="cursor:pointer;" onclick="event.stopPropagation(); goToDetail('${stock.symbol}')">${stock.name}</div>
                         <div class="stock-code">${stock.symbol}</div>
                     </div>
+                    
                 </div>
                 <div class="stock-price ${priceClass}">¥${stock.price > 0 ? stock.price.toFixed(2) : '--'}</div>
                 <div class="stock-trend">
                     <span class="trend-name">${stock.trend_name || '未知'}</span>
-                    <span class="trend-signal" style="background:${stock.signal_color}">${stock.signal_text}</span>
+                    <span class="trend-signal" style="background:${stock.signal_color}">${TREND_DESC[stock.trend_code] || stock.signal_text}</span>
                 </div>
             </div>
         `;
@@ -471,6 +433,79 @@ function stopAutoRefresh() {
         clearInterval(autoRefreshTimer);
         autoRefreshTimer = null;
     }
+}
+
+// ==========================================
+// 标签切换：自选股 / 历史搜索
+// ==========================================
+let currentTab = 'watchlist';
+
+function switchTab(tab) {
+    currentTab = tab;
+    document.getElementById('tabWatchlist').classList.toggle('active', tab === 'watchlist');
+    document.getElementById('tabHistory').classList.toggle('active', tab === 'history');
+    document.getElementById('stocksGrid').style.display = tab === 'watchlist' ? '' : 'none';
+    document.getElementById('historyGrid').style.display = tab === 'history' ? '' : 'none';
+
+    if (tab === 'history') {
+        loadHistory();
+    }
+}
+
+async function loadHistory() {
+    const grid = document.getElementById('historyGrid');
+    grid.innerHTML = `
+        <div class="loading">
+            <div class="spinner"></div>
+            <span>加载历史搜索...</span>
+        </div>
+    `;
+
+    try {
+        const resp = await fetch('/api/history');
+        const data = await resp.json();
+
+        if (!data.history || data.history.length === 0) {
+            grid.innerHTML = `<div class="empty-state">暂无历史搜索记录<br><span style="font-size:12px;color:#9ca3af;">搜索过的股票将显示在这里</span></div>`;
+            return;
+        }
+
+        renderHistory(data.history);
+    } catch (e) {
+        grid.innerHTML = `<div class="empty-state">加载失败: ${e.message}</div>`;
+    }
+}
+
+function renderHistory(history) {
+    const grid = document.getElementById('historyGrid');
+
+    grid.innerHTML = history.map(stock => {
+        const isUp = stock.trend_code.startsWith('up');
+        const priceClass = isUp ? 'up' : 'down';
+        const borderColor = stock.signal_color || '#9ca3af';
+        const hasDetail = stock.has_detail;
+
+        return `
+            <div class="stock-card ${isUp ? 'up' : 'down'}" style="border-left-color:${borderColor}" onclick="goToDetail('${stock.symbol}')">
+                <div class="stock-card-header">
+                    <div>
+                        <div class="stock-name">${stock.name}</div>
+                        <div class="stock-code">${stock.code || stock.symbol}</div>
+                    </div>
+                    
+                </div>
+                <div class="stock-price ${priceClass}">¥${stock.price > 0 ? stock.price.toFixed(2) : '--'}</div>
+                <div class="stock-trend">
+                    <span class="trend-name">${stock.trend_name || '暂无数据'}</span>
+                    <span class="trend-signal" style="background:${stock.signal_color}">${TREND_DESC[stock.trend_code] || stock.signal_text}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function goToDetail(symbol) {
+    window.location.href = `/trend_detail/${symbol}`;
 }
 
 // ==========================================

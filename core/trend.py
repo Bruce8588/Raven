@@ -54,7 +54,7 @@ def update_trend(state, high, low):
 
     # ========== 上升趋势体系 ==========
     if trend == "up":
-        if key_high is not None and high is not None and high > key_high:
+        if high is not None and (key_high is None or high > key_high):
             key_high = high
         if key_high is not None and low is not None and low < key_high * PULLBACK_THRESHOLD:
             n_low = low
@@ -81,7 +81,7 @@ def update_trend(state, high, low):
             new_trend = "up_secondary"
         elif rally_high is not None and high is not None and high > rally_high and (key_high is None or high < key_high):
             rally_high = high
-        elif key_high is not None and high is not None and high > key_high:
+        elif high is not None and (key_high is None or high > key_high):
             key_high = high
             new_trend = "up"
 
@@ -110,7 +110,7 @@ def update_trend(state, high, low):
 
     # ========== 下跌趋势体系 ==========
     elif trend == "down":
-        if key_low is not None and low is not None and low < key_low:
+        if low is not None and (key_low is None or low < key_low):
             key_low = low
         if key_low is not None and high is not None and high > key_low * RALLY_THRESHOLD:
             n_high = high

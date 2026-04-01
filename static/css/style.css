@@ -394,6 +394,23 @@ body {
     font-size: 15px;
 }
 
+.detail-btn {
+    background: none;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 4px 8px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.2s;
+    flex-shrink: 0;
+    margin-left: 8px;
+}
+
+.detail-btn:hover {
+    background: #1a73e8;
+    border-color: #1a73e8;
+}
+
 .stock-code {
     font-size: 12px;
     color: var(--text-secondary);
