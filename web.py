@@ -1,4 +1,3 @@
-from typing import Optional
 #!/usr/bin/env python3
 """
 Raven 网页界面 - Flask 服务器
@@ -75,7 +74,7 @@ def get_latest_trend_csv():
     return latest
 
 
-def _get_current_trend_from_csv(symbol: str, info: dict) -> Optional[dict]:
+def _get_current_trend_from_csv(symbol: str, info: dict) -> dict | None:
     """
     从 output/趋势判断/{symbol}_趋势判断.csv 读取当前趋势数据。
     返回 dict 包含 trend_code, trend_name, key_*, n_*, rally_*, secondary_* 等字段。
@@ -188,7 +187,7 @@ def clean_nan(obj):
     return obj
 
 
-def _fetch_stock_unknown(stock_name: str) -> Optional[dict]:
+def _fetch_stock_unknown(stock_name: str) -> dict | None:
     """
     尝试从iFind获取未知股票（不在自选股名单中）
     stock_name: 可能是股票名称或代码
@@ -231,144 +230,71 @@ def _fetch_stock_unknown(stock_name: str) -> Optional[dict]:
             
             for market_name, suffix in market_list:
                 try:
-                    # 先获取配置时间和初始状态
-                    config_path = os.path.join(BASE_DIR, "config", "initial_configs.csv")
-                    config_code = f"{code}{market_name}"  # e.g. "000333SZ"
-                    
-                    config_time = None
-                    stock_config = {}
-                    if os.path.exists(config_path):
-                        configs_df = pd.read_csv(config_path)
-                        config_row = configs_df[configs_df['股票代码'] == config_code]
-                        if not config_row.empty:
-                            row = config_row.iloc[0]
-                            config_time_str = row.get('最新时间')
-                            if config_time_str and pd.notna(config_time_str):
-                                try:
-                                    config_time = pd.to_datetime(config_time_str)
-                                except:
-                                    pass
-                            stock_config = {
-                                "trend": row.get('趋势代码', 'up'),
-                                "key_high": row.get('key_high'),
-                                "key_low": row.get('key_low'),
-                                "n_low": row.get('n_low'),
-                                "n_high": row.get('n_high'),
-                                "rally_high": row.get('rally_high'),
-                                "rally_low": row.get('rally_low'),
-                                "secondary_low": row.get('secondary_low'),
-                                "secondary_high": row.get('secondary_high'),
-                                "break_low": row.get('break_low'),
-                                "break_high": row.get('break_high'),
-                            }
-                    
-                    # 计算需要获取的天数：从配置时间到今天 + 缓冲
                     fetcher = IFinDFetcher()
-                    if config_time:
-                        from datetime import datetime
-                        today = datetime.now()
-                        days_needed = (today - config_time).days + 3
-                        # 限制最小7天，最大30天
-                        days_needed = max(7, min(days_needed, 30))
-                        print(f"[DEBUG] 配置点: {config_time}, 需要获取 {days_needed} 天数据")
-                    else:
-                        days_needed = 7
-                    
-                    df = fetcher.get_minute_data(f"{code}{suffix}", days=int(days_needed))
+                    df = fetcher.get_minute_data(f"{code}{suffix}", days=7)
                     if df is not None and len(df) > 0:
-                        # 保存数据
+                        # 保存分钟数据（与 api_trend_detail 读取路径一致）
                         db_dir = os.path.join(BASE_DIR, "data")
                         os.makedirs(db_dir, exist_ok=True)
-                        df.to_csv(os.path.join(db_dir, f"unknown_{code}_min1.csv"), index=False, encoding="utf-8")
-                        
-                        # 分析趋势 - 使用逐帧分析处理历史数据
-                        from core.trend import TrendAnalyzer, init_state, update_trend
-                        from core.config.rules import TREND_NAMES
-                        
-                        # 过滤数据：只保留配置时间点之后的数据
-                        df['day'] = pd.to_datetime(df['day'])
-                        if config_time:
-                            df = df[df['day'] >= config_time]
-                            if df.empty:
-                                print(f"[未知股票] {actual_name} 在配置时间点后无数据")
-                                continue
-                            if df.empty:
-                                print(f"[未知股票] {actual_name} 在配置时间点后无数据")
-                                continue
-                        
-                        # 按时间排序
-                        df = df.sort_values("day").reset_index(drop=True)
-                        
-                        # 使用逐帧分析处理历史数据
-                        state = init_state(stock_config) if stock_config else init_state({"trend": "up"})
-                        
-                        # 关键点映射
+                        symbol_for_file = f"{market_name.lower()}{code}"
+                        db_file = os.path.join(db_dir, f"{symbol_for_file}_{code}_min1.csv")
+                        if os.path.exists(db_file):
+                            old_df = pd.read_csv(db_file)
+                            old_df["day"] = pd.to_datetime(old_df["day"])
+                            df["day"] = pd.to_datetime(df["day"])
+                            df = pd.concat([old_df, df], ignore_index=True)
+                            df = df.drop_duplicates(subset=["day"], keep="last")
+                            df = df.sort_values("day").reset_index(drop=True)
+                        df.to_csv(db_file, index=False, encoding="utf-8")
+
+                        # 逐帧趋势分析（生成完整分钟级趋势历史）
+                        from core.trend import init_state, update_trend as ut_update
+                        state = init_state({"trend": "up"})
                         TREND_KEYPOINT_MAP = {
-                            "up": "key_high",
-                            "up_natural": "n_low",
-                            "up_rally": "rally_high",
-                            "up_secondary": "secondary_low",
-                            "up_break": "key_low",
-                            "down": "key_low",
-                            "down_natural": "n_high",
-                            "down_rally": "rally_low",
-                            "down_secondary": "secondary_high",
-                            "down_break": "key_high",
+                            "up": "key_high", "up_natural": "n_low", "up_rally": "rally_high",
+                            "up_secondary": "secondary_low", "up_break": "key_low",
+                            "down": "key_low", "down_natural": "n_high", "down_rally": "rally_low",
+                            "down_secondary": "secondary_high", "down_break": "key_high",
                         }
-                        
                         trend_records = []
                         trend_judgment_records = []
                         prev_trend = None
-                        prev_keypoint_value = None
-                        
+                        prev_kp_value = None
+
+                        df = df.sort_values("day").reset_index(drop=True)
                         for _, row in df.iterrows():
                             high = float(row["high"])
                             low = float(row["low"])
-                            state = update_trend(state, high, low)
-                            
+                            state = ut_update(state, high, low)
                             current_trend = state["trend"]
                             kp_name = TREND_KEYPOINT_MAP.get(current_trend, "")
                             kp_value = state.get(kp_name) if kp_name else None
                             day_str = str(row["day"])
-                            
-                            # 趋势判断：每行都记录
+
                             trend_judgment_records.append({
-                                "时间": day_str,
-                                "当前价格": row["close"],
-                                "趋势代码": current_trend,
-                                "趋势名称": TREND_NAMES.get(current_trend, ""),
-                                "key_high": state.get("key_high"),
-                                "key_low": state.get("key_low"),
-                                "n_low": state.get("n_low"),
-                                "n_high": state.get("n_high"),
-                                "rally_high": state.get("rally_high"),
-                                "rally_low": state.get("rally_low"),
-                                "secondary_low": state.get("secondary_low"),
-                                "secondary_high": state.get("secondary_high"),
-                                "break_low": state.get("break_low"),
-                                "break_high": state.get("break_high"),
+                                "时间": day_str, "当前价格": row["close"],
+                                "趋势代码": current_trend, "趋势名称": TREND_NAMES.get(current_trend, ""),
+                                "key_high": state.get("key_high"), "key_low": state.get("key_low"),
+                                "n_low": state.get("n_low"), "n_high": state.get("n_high"),
+                                "rally_high": state.get("rally_high"), "rally_low": state.get("rally_low"),
+                                "secondary_low": state.get("secondary_low"), "secondary_high": state.get("secondary_high"),
+                                "break_low": state.get("break_low"), "break_high": state.get("break_high"),
                             })
-                            
-                            # 每分钟都记录（不是仅变化时）
-                            trend_records.append({
-                                "时间": day_str,
-                                "价格": row["close"],
-                                "趋势": current_trend,
-                                "趋势名称": TREND_NAMES.get(current_trend, ""),
-                                "关键点名称": kp_name,
-                                "关键点": kp_value,
-                            })
-                            prev_trend = current_trend
-                            prev_keypoint_value = kp_value
-                        
-                        # 生成 symbol 用于文件命名
-                        symbol = f"{market_name.lower()}{code}"
-                        
-                        # 保存趋势历史到CSV
+                            if current_trend != prev_trend or kp_value != prev_kp_value:
+                                trend_records.append({
+                                    "时间": day_str, "价格": row["close"],
+                                    "趋势": current_trend, "趋势名称": TREND_NAMES.get(current_trend, ""),
+                                    "关键点名称": kp_name, "关键点": kp_value,
+                                })
+                                prev_trend = current_trend
+                                prev_kp_value = kp_value
+
+                        # 保存趋势历史 CSV
                         output_dir = os.path.join(BASE_DIR, "output", "趋势历史")
                         os.makedirs(output_dir, exist_ok=True)
+                        symbol_for_file = f"{market_name.lower()}{code}"
                         trend_df = pd.DataFrame(trend_records)
-                        trend_file = os.path.join(output_dir, f"{symbol}_趋势历史.csv")
+                        trend_file = os.path.join(output_dir, f"{symbol_for_file}_趋势历史.csv")
                         if os.path.exists(trend_file):
                             existing_df = pd.read_csv(trend_file)
                             existing_df["时间"] = pd.to_datetime(existing_df["时间"])
@@ -377,12 +303,12 @@ def _fetch_stock_unknown(stock_name: str) -> Optional[dict]:
                             trend_df = trend_df.drop_duplicates(subset=["时间", "趋势", "关键点名称"], keep="last")
                             trend_df = trend_df.sort_values("时间").reset_index(drop=True)
                         trend_df.to_csv(trend_file, index=False, encoding="utf-8")
-                        
-                        # 保存趋势判断到CSV
+
+                        # 保存趋势判断 CSV
                         judgment_dir = os.path.join(BASE_DIR, "output", "趋势判断")
                         os.makedirs(judgment_dir, exist_ok=True)
                         judgment_df = pd.DataFrame(trend_judgment_records)
-                        judgment_file = os.path.join(judgment_dir, f"{symbol}_趋势判断.csv")
+                        judgment_file = os.path.join(judgment_dir, f"{symbol_for_file}_趋势判断.csv")
                         if os.path.exists(judgment_file):
                             existing_j = pd.read_csv(judgment_file)
                             existing_j["时间"] = pd.to_datetime(existing_j["时间"])
@@ -391,17 +317,16 @@ def _fetch_stock_unknown(stock_name: str) -> Optional[dict]:
                             judgment_df = judgment_df.drop_duplicates(subset=["时间"], keep="last")
                             judgment_df = judgment_df.sort_values("时间").reset_index(drop=True)
                         judgment_df.to_csv(judgment_file, index=False, encoding="utf-8")
-                        
+
+                        # 返回结果
                         trend_code = state["trend"]
                         signal = get_signal(trend_code)
-                        current_price = float(df.iloc[-1]["close"])
-                        
                         return {
-                            "symbol": symbol,
+                            "symbol": symbol_for_file,
                             "name": actual_name,
                             "code": code,
                             "market": market_name,
-                            "price": current_price,
+                            "price": float(df.iloc[-1]["close"]),
                             "trend_code": trend_code,
                             "trend_name": TREND_NAMES.get(trend_code, trend_code),
                             "signal_text": signal["text"],
@@ -414,7 +339,7 @@ def _fetch_stock_unknown(stock_name: str) -> Optional[dict]:
                             "rally_low": state.get("rally_low"),
                             "secondary_high": state.get("secondary_high"),
                             "secondary_low": state.get("secondary_low"),
-                            "description": get_trend_description(trend_code, current_price, state),
+                            "description": get_trend_description(trend_code, float(df.iloc[-1]["close"]), state),
                             "update_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             "from_cache": False,
                         }
@@ -441,7 +366,7 @@ def _fetch_stock_unknown(stock_name: str) -> Optional[dict]:
         return None
 
 
-def _fetch_stock_from_ifind(symbol: str, info: dict) -> Optional[dict]:
+def _fetch_stock_from_ifind(symbol: str, info: dict) -> dict | None:
     """
     从iFind获取单只股票数据并分析
     只分析配置时间点之后的数据
@@ -579,18 +504,19 @@ def _fetch_stock_from_ifind(symbol: str, info: dict) -> Optional[dict]:
                 "break_high": state.get("break_high"),
             })
             
-            # 每分钟都记录（不是仅变化时）
-            trend_records.append({
-                "时间": day_str,
-                "价格": row["close"],
-                "趋势": current_trend,
-                "趋势名称": TREND_NAMES.get(current_trend, ""),
-                "关键点名称": kp_name,
-                "关键点": kp_value,
-            })
-            prev_trend = current_trend
-            prev_keypoint_value = kp_value
-            prev_day = day_str
+            # 仅当趋势变化或关键点变化时记录一行
+            if current_trend != prev_trend or kp_value != prev_keypoint_value:
+                trend_records.append({
+                    "时间": day_str,
+                    "价格": row["close"],
+                    "趋势": current_trend,
+                    "趋势名称": TREND_NAMES.get(current_trend, ""),
+                    "关键点名称": kp_name,
+                    "关键点": kp_value,
+                })
+                prev_trend = current_trend
+                prev_keypoint_value = kp_value
+                prev_day = day_str
         
         # 保存趋势历史到CSV（追加模式）
         output_dir = os.path.join(BASE_DIR, "output", "趋势历史")
@@ -928,36 +854,8 @@ def query():
     symbol = matches[0]
     info = watchlist[symbol]
 
-    # Step 1: 检查缓存（只有缓存有效时才使用）
-    cached = stock_cache.get(symbol)
-    if cached is not None and cached.get('trend_code'):
-        # 确保搜索记录写入 searched_stocks.json
-        stock_cache.add_searched(symbol)
-        signal = get_signal(cached.get('trend_code', ''))
-        return jsonify(clean_nan({
-            "symbol": symbol,
-            "name": cached.get('name', symbol),
-            "code": info.get('code', ''),
-            "market": info.get('market', ''),
-            "price": cached.get('price', 0),
-            "trend_code": cached.get('trend_code', ''),
-            "trend_name": cached.get('trend_name', ''),
-            "signal_text": signal['text'],
-            "signal_color": signal['color'],
-            "key_high": cached.get('key_high'),
-            "key_low": cached.get('key_low'),
-            "n_low": cached.get('n_low'),
-            "n_high": cached.get('n_high'),
-            "rally_high": cached.get('rally_high'),
-            "rally_low": cached.get('rally_low'),
-            "secondary_low": cached.get('secondary_low'),
-            "secondary_high": cached.get('secondary_high'),
-            "description": cached.get('description', ''),
-            "update_time": cached.get('update_time', ''),
-            "from_cache": True,
-        }))
-
-    # Step 2: 缓存无或过期，从iFind获取
+    # Step 1: 每次搜索都重新从iFind获取并分析（不走缓存捷径，保证数据最新）
+    # Step 2: 从iFind获取
     result_data = _fetch_stock_from_ifind(symbol, info)
 
     if result_data is None:
@@ -1034,18 +932,33 @@ def query():
 
 @app.route('/api/refresh', methods=['POST'])
 def api_refresh():
-    """后台刷新：更新所有已搜索股票的数据"""
+    """后台刷新：更新自选股、历史搜索、所有分组的股票"""
     try:
-        searched = stock_cache.get_searched()
-        if not searched:
-            return jsonify({"errorcode": 0, "errmsg": "无已搜索股票", "updated": 0})
-        
+        import time
         results = []
+        updated_symbols = set()
+
+        # 1. 自选股
+        watchlist = load_watchlist()
+        for symbol, info in watchlist.items():
+            if symbol in updated_symbols:
+                continue
+            result_data = _fetch_stock_from_ifind(symbol, info)
+            if result_data:
+                stock_cache.set(symbol, result_data)
+                results.append({"symbol": symbol, "name": result_data.get("name"), "source": "自选股", "status": "success"})
+            else:
+                results.append({"symbol": symbol, "source": "自选股", "status": "failed"})
+            updated_symbols.add(symbol)
+            time.sleep(1)
+
+        # 2. 历史搜索
+        searched = stock_cache.get_searched()
         for symbol in searched:
-            watchlist = load_watchlist()
+            if symbol in updated_symbols:
+                continue
             info = watchlist.get(symbol, {})
             if not info:
-                # 尝试找匹配
                 for k, v in watchlist.items():
                     if v.get("code") == symbol:
                         info = v
@@ -1053,23 +966,182 @@ def api_refresh():
                         break
             if not info:
                 continue
-            
             result_data = _fetch_stock_from_ifind(symbol, info)
             if result_data:
                 stock_cache.set(symbol, result_data)
-                results.append({"symbol": symbol, "name": result_data.get("name"), "status": "success"})
+                results.append({"symbol": symbol, "name": result_data.get("name"), "source": "历史搜索", "status": "success"})
             else:
-                results.append({"symbol": symbol, "status": "failed"})
-            import time
+                results.append({"symbol": symbol, "source": "历史搜索", "status": "failed"})
+            updated_symbols.add(symbol)
             time.sleep(1)
-        
+
+        # 3. 所有分组的股票
+        groups_path = os.path.join(BASE_DIR, "config", "groups.json")
+        if os.path.exists(groups_path):
+            import json as json_module
+            with open(groups_path, 'r', encoding='utf-8') as f:
+                groups_data = json_module.load(f)
+            for group in groups_data.get("groups", []):
+                for symbol in group.get("stocks", []):
+                    if symbol in updated_symbols:
+                        continue
+                    info = watchlist.get(symbol, {})
+                    if not info:
+                        for k, v in watchlist.items():
+                            if v.get("code") == symbol:
+                                info = v
+                                symbol = k
+                                break
+                    if not info:
+                        continue
+                    result_data = _fetch_stock_from_ifind(symbol, info)
+                    if result_data:
+                        stock_cache.set(symbol, result_data)
+                        results.append({"symbol": symbol, "name": result_data.get("name"), "source": f"分组-{group.get('name','')}", "status": "success"})
+                    else:
+                        results.append({"symbol": symbol, "source": f"分组-{group.get('name','')}", "status": "failed"})
+                    updated_symbols.add(symbol)
+                    time.sleep(1)
+
         return jsonify({
             "errorcode": 0,
-            "errmsg": f"刷新完成",
+            "errmsg": "刷新完成",
             "updated": len([r for r in results if r.get("status") == "success"]),
             "total": len(results),
             "details": results,
         })
+    except Exception as e:
+        return jsonify({"errorcode": 1, "errmsg": str(e)}), 500
+
+
+@app.route('/api/groups', methods=['GET'])
+def api_groups():
+    """获取所有股票分组"""
+    try:
+        groups_path = os.path.join(BASE_DIR, "config", "groups.json")
+        if os.path.exists(groups_path):
+            with open(groups_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return jsonify({"errorcode": 0, "groups": data.get("groups", [])})
+        return jsonify({"errorcode": 0, "groups": []})
+    except Exception as e:
+        return jsonify({"errorcode": 1, "errmsg": str(e)}), 500
+
+
+@app.route('/api/groups', methods=['POST'])
+def api_groups_create():
+    """创建新分组"""
+    try:
+        data = request.get_json()
+        name = data.get('name', '').strip()
+        if not name:
+            return jsonify({"errorcode": 1, "errmsg": "分组名不能为空"}), 400
+
+        groups_path = os.path.join(BASE_DIR, "config", "groups.json")
+        if os.path.exists(groups_path):
+            with open(groups_path, "r", encoding="utf-8") as f:
+                groups_data = json.load(f)
+        else:
+            groups_data = {"groups": []}
+
+        import uuid
+        new_group = {
+            "id": f"group_{uuid.uuid4().hex[:8]}",
+            "name": name,
+            "stocks": []
+        }
+        groups_data["groups"].append(new_group)
+
+        with open(groups_path, "w", encoding="utf-8") as f:
+            json.dump(groups_data, f, ensure_ascii=False, indent=2)
+
+        return jsonify({"errorcode": 0, "group": new_group})
+    except Exception as e:
+        return jsonify({"errorcode": 1, "errmsg": str(e)}), 500
+
+
+@app.route('/api/groups/<group_id>', methods=['DELETE'])
+def api_groups_delete(group_id):
+    """删除分组"""
+    try:
+        groups_path = os.path.join(BASE_DIR, "config", "groups.json")
+        if os.path.exists(groups_path):
+            with open(groups_path, "r", encoding="utf-8") as f:
+                groups_data = json.load(f)
+        else:
+            return jsonify({"errorcode": 1, "errmsg": "分组不存在"}), 404
+
+        original_count = len(groups_data["groups"])
+        groups_data["groups"] = [g for g in groups_data["groups"] if g.get("id") != group_id]
+        if len(groups_data["groups"]) == original_count:
+            return jsonify({"errorcode": 1, "errmsg": "分组不存在"}), 404
+
+        with open(groups_path, "w", encoding="utf-8") as f:
+            json.dump(groups_data, f, ensure_ascii=False, indent=2)
+
+        return jsonify({"errorcode": 0, "errmsg": "删除成功"})
+    except Exception as e:
+        return jsonify({"errorcode": 1, "errmsg": str(e)}), 500
+
+
+@app.route('/api/groups/<group_id>/add', methods=['POST'])
+def api_groups_add_stock(group_id):
+    """添加股票到分组"""
+    try:
+        data = request.get_json()
+        symbol = data.get('symbol', '').strip()
+        if not symbol:
+            return jsonify({"errorcode": 1, "errmsg": "股票代码不能为空"}), 400
+
+        groups_path = os.path.join(BASE_DIR, "config", "groups.json")
+        if os.path.exists(groups_path):
+            with open(groups_path, "r", encoding="utf-8") as f:
+                groups_data = json.load(f)
+        else:
+            return jsonify({"errorcode": 1, "errmsg": "分组不存在"}), 404
+
+        group = next((g for g in groups_data["groups"] if g.get("id") == group_id), None)
+        if not group:
+            return jsonify({"errorcode": 1, "errmsg": "分组不存在"}), 404
+
+        if symbol not in group["stocks"]:
+            group["stocks"].append(symbol)
+
+        with open(groups_path, "w", encoding="utf-8") as f:
+            json.dump(groups_data, f, ensure_ascii=False, indent=2)
+
+        return jsonify({"errorcode": 0, "errmsg": "添加成功"})
+    except Exception as e:
+        return jsonify({"errorcode": 1, "errmsg": str(e)}), 500
+
+
+@app.route('/api/groups/<group_id>/remove', methods=['POST'])
+def api_groups_remove_stock(group_id):
+    """从分组移除股票"""
+    try:
+        data = request.get_json()
+        symbol = data.get('symbol', '').strip()
+        if not symbol:
+            return jsonify({"errorcode": 1, "errmsg": "股票代码不能为空"}), 400
+
+        groups_path = os.path.join(BASE_DIR, "config", "groups.json")
+        if os.path.exists(groups_path):
+            with open(groups_path, "r", encoding="utf-8") as f:
+                groups_data = json.load(f)
+        else:
+            return jsonify({"errorcode": 1, "errmsg": "分组不存在"}), 404
+
+        group = next((g for g in groups_data["groups"] if g.get("id") == group_id), None)
+        if not group:
+            return jsonify({"errorcode": 1, "errmsg": "分组不存在"}), 404
+
+        if symbol in group["stocks"]:
+            group["stocks"].remove(symbol)
+
+        with open(groups_path, "w", encoding="utf-8") as f:
+            json.dump(groups_data, f, ensure_ascii=False, indent=2)
+
+        return jsonify({"errorcode": 0, "errmsg": "移除成功"})
     except Exception as e:
         return jsonify({"errorcode": 1, "errmsg": str(e)}), 500
 
@@ -1433,6 +1505,47 @@ def api_trend_detail(symbol):
         trend_judge_path = os.path.join(BASE_DIR, "output", "趋势判断", f"{symbol}_趋势判断.csv")
 
         records = []
+        trend_judge_records = []
+
+        # 总是从趋势判断CSV读取完整分钟数据（用于图表和分钟表）
+        if os.path.exists(trend_judge_path):
+            try:
+                df_judge = pd.read_csv(trend_judge_path)
+                df_judge['时间_dt'] = pd.to_datetime(df_judge['时间'], errors='coerce')
+                df_judge = df_judge.sort_values('时间_dt', ascending=True).reset_index(drop=True)
+                # 过滤掉配置点之前的数据
+                if config_info.get('config_date'):
+                    config_dt = pd.to_datetime(config_info['config_date'], errors='coerce')
+                    if pd.notna(config_dt):
+                        df_judge = df_judge[df_judge['时间_dt'] >= config_dt]
+                for _, row in df_judge.iterrows():
+                    trend_judge_records.append({
+                        "time": str(row.get('时间', ''))[:16],
+                        "trend_code": str(row.get('趋势代码', '')),
+                        "trend_name": str(row.get('趋势名称', '')),
+                        "close": float(row['当前价格']) if pd.notna(row.get('当前价格')) else None,
+                        "key_high": float(row['key_high']) if pd.notna(row.get('key_high')) else None,
+                        "key_low": float(row['key_low']) if pd.notna(row.get('key_low')) else None,
+                        "n_low": float(row['n_low']) if pd.notna(row.get('n_low')) else None,
+                        "n_high": float(row['n_high']) if pd.notna(row.get('n_high')) else None,
+                        "rally_high": float(row['rally_high']) if pd.notna(row.get('rally_high')) else None,
+                        "rally_low": float(row['rally_low']) if pd.notna(row.get('rally_low')) else None,
+                        "secondary_low": float(row['secondary_low']) if pd.notna(row.get('secondary_low')) else None,
+                        "secondary_high": float(row['secondary_high']) if pd.notna(row.get('secondary_high')) else None,
+                        "break_low": float(row['break_low']) if pd.notna(row.get('break_low')) else None,
+                        "break_high": float(row['break_high']) if pd.notna(row.get('break_high')) else None,
+                        "上升趋势": float(row['key_high']) if pd.notna(row.get('key_high')) else None,
+                        "自然回撤": float(row['n_low']) if pd.notna(row.get('n_low')) else None,
+                        "回升": float(row['rally_high']) if pd.notna(row.get('rally_high')) else None,
+                        "次级回撤": float(row['secondary_low']) if pd.notna(row.get('secondary_low')) else None,
+                        "下跌趋势": float(row['key_low']) if pd.notna(row.get('key_low')) else None,
+                        "自然回升": float(row['n_high']) if pd.notna(row.get('n_high')) else None,
+                        "回撤": float(row['rally_low']) if pd.notna(row.get('rally_low')) else None,
+                        "次级回升": float(row['secondary_high']) if pd.notna(row.get('secondary_high')) else None,
+                    })
+            except Exception as e:
+                print(f"[trend_detail] 读取趋势判断CSV失败: {e}")
+
         if os.path.exists(trend_history_path):
             # 检测 CSV 格式：新格式(时间,价格,趋势,趋势名称,关键点名称,关键点) 或 旧格式(时间,day,high,low,close,trend,trend_name,key_high,...)
             df = pd.read_csv(trend_history_path)
@@ -1557,8 +1670,8 @@ def api_trend_detail(symbol):
                 "config_info": config_info,
                 "total_records": len(records),
                 "records": records,
-                "minute_records": minute_records,
-                "minute_total": len(minute_records),
+                "minute_records": trend_judge_records if trend_judge_records else minute_records,
+                "minute_total": len(trend_judge_records) if trend_judge_records else len(minute_records),
             }))
         else:
             return jsonify(clean_nan({
@@ -1576,8 +1689,8 @@ def api_trend_detail(symbol):
                 "config_info": config_info,
                 "total_records": 0,
                 "records": [],
-                "minute_records": minute_records,
-                "minute_total": len(minute_records),
+                "minute_records": trend_judge_records if trend_judge_records else minute_records,
+                "minute_total": len(trend_judge_records) if trend_judge_records else len(minute_records),
             }))
 
     except Exception as e:
@@ -1617,4 +1730,4 @@ if __name__ == '__main__':
     # 启动后台更新器（5分钟间隔）
     start_background_updater(interval=300)
     
-    app.run(host='0.0.0.0', port=8888, debug=True, threaded=True)
+    app.run(host='0.0.0.0', port=5019, debug=True, threaded=True)

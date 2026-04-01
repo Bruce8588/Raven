@@ -27,7 +27,7 @@ let lastFetchTime = null;
 // ==========================================
 document.addEventListener('DOMContentLoaded', () => {
     checkTokenStatus();
-    refreshAll();
+    loadTrends();        // 只加载已有数据，不刷新
     setupAutoRefresh();
 });
 
@@ -130,24 +130,118 @@ async function submitNewToken() {
 }
 
 // ==========================================
-// 刷新所有数据
+// 刷新所有数据（刷新按钮调用：先刷新iFind数据，再获取展示）
 // ==========================================
+let isRefreshing = false;
+
 async function refreshAll() {
-    showLoading();
+    if (isRefreshing) return;
+    isRefreshing = true;
+
+    const btn = document.querySelector('.btn-refresh');
+    if (btn) btn.textContent = '⏳';
+    const lastUpdateEl = document.getElementById('lastUpdate');
+    const prevText = lastUpdateEl ? lastUpdateEl.textContent : '';
+    if (lastUpdateEl) lastUpdateEl.textContent = '正在刷新...';
+
     try {
+        // 先触发后端重新分析所有股票（POST /api/refresh）
+        const refreshResp = await fetch('/api/refresh', { method: 'POST' });
+        if (!refreshResp.ok) throw new Error('刷新请求失败');
+        const refreshData = await refreshResp.json();
+        const updated = refreshData.updated || 0;
+        const total = refreshData.total || 0;
+
+        // 然后获取最新数据展示
         const resp = await fetch('/api/trends');
         if (!resp.ok) throw new Error('获取数据失败');
         allStocks = await resp.json();
+        // 缓存股票数据供分组使用
+        window._cachedStocks = {};
+        allStocks.forEach(s => { window._cachedStocks[s.symbol] = s; });
         lastFetchTime = new Date();
         renderStocks();
         updateLastTime();
         updateDataSource();
+
+        if (lastUpdateEl) lastUpdateEl.textContent = `已更新 ${updated}/${total} 只股票`;
+        else if (total > 0) alert(`已更新 ${updated}/${total} 只股票`);
 
         // 每次刷新时顺便检查token状态
         checkTokenStatusQuiet();
     } catch (e) {
         console.error(e);
         showEmpty('加载失败，请检查服务器是否启动');
+        if (lastUpdateEl) lastUpdateEl.textContent = prevText || '刷新失败';
+    } finally {
+        isRefreshing = false;
+        const btn = document.querySelector('.btn-refresh');
+        if (btn) btn.textContent = '🔄';
+    }
+}
+
+// ==========================================
+// 仅加载数据（页面加载时调用，不触发iFind刷新）
+// ==========================================
+async function loadTrends() {
+    try {
+        const resp = await fetch('/api/trends');
+        if (!resp.ok) throw new Error('获取数据失败');
+        allStocks = await resp.json();
+        // 缓存股票数据供分组使用
+        window._cachedStocks = {};
+        allStocks.forEach(s => { window._cachedStocks[s.symbol] = s; });
+        lastFetchTime = new Date();
+        renderStocks();
+        updateLastTime();
+        updateDataSource();
+    } catch (e) {
+        console.error(e);
+        showEmpty('加载失败，请检查服务器是否启动');
+    }
+}
+
+// ==========================================
+// 刷新单只股票（点击卡片时调用）
+// ==========================================
+async function refreshStock(symbol) {
+    const stock = allStocks.find(s => s.symbol === symbol);
+    if (!stock) return;
+
+    // 显示加载状态
+    const cards = document.querySelectorAll(`.stock-card[onclick*="refreshStock('${symbol}')"]`);
+    cards.forEach(card => {
+        card.style.opacity = '0.6';
+        card.style.pointerEvents = 'none';
+    });
+
+    try {
+        // 调用后端刷新单只股票
+        const resp = await fetch('/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: stock.name || stock.code })
+        });
+
+        if (resp.ok) {
+            // 重新加载所有数据
+            await loadTrends();
+            showToast(`✅ ${stock.name} 已刷新`, 'info');
+            // 跳转到趋势详情页
+            setTimeout(() => {
+                goToDetail(symbol);
+            }, 300);
+        } else {
+            throw new Error('刷新失败');
+        }
+    } catch (e) {
+        console.error(e);
+        showToast(`❌ ${stock.name} 刷新失败`, 'error');
+    } finally {
+        cards.forEach(card => {
+            card.style.opacity = '';
+            card.style.pointerEvents = '';
+        });
     }
 }
 
@@ -228,11 +322,8 @@ function showResult(data) {
     const trendCode = data.trend_code;
     let keypoints = '';  // 搜索结果中不展示关键点小卡片区，留空
 
-    // 添加symbol到data以便跳转
-    data.symbol = data.symbol || (data.market ? data.market.toLowerCase() + data.code : data.code);
-
     detail.innerHTML = `
-        <div class="detail-header">
+        <div class="detail-header" onclick="goToDetail('${data.symbol}')" style="cursor:pointer;" title="点击查看趋势详情">
             <div>
                 <div class="detail-name">${data.name}</div>
                 <div class="detail-code">${data.code || ''} ${data.market === 'SZ' ? '深圳' : data.market === 'SH' ? '上海' : ''}</div>
@@ -246,7 +337,12 @@ function showResult(data) {
                 <div class="detail-price">¥${data.price > 0 ? data.price.toFixed(2) : '--'}</div>
                 <div class="detail-trend">${data.trend_name || '未知趋势'}</div>
             </div>
-            <button class="detail-btn" onclick="goToDetail('${data.symbol}')">📊 查看详情</button>
+            <div style="display:flex;gap:8px;margin-top:8px;">
+                <button onclick="openGroupSelectModal('${data.symbol}', '${data.name}')"
+                    style="padding:6px 14px;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:20px;font-size:13px;cursor:pointer;color:#374151;">
+                    📁 加入分组
+                </button>
+            </div>
         </div>
         <div class="detail-desc">${data.description || ''}</div>
         <div style="margin-top:12px;font-size:12px;color:#999;">
@@ -328,7 +424,7 @@ function renderStocks() {
         const hasDetail = stock.has_trend_data !== false;
 
         return `
-            <div class="stock-card ${cardClass}" style="border-left-color: ${borderColor}" onclick="goToDetail('${stock.symbol}')">
+            <div class="stock-card ${cardClass}" style="border-left-color: ${borderColor}" onclick="refreshStock('${stock.symbol}')">
                 ${stock.changed ? '<span class="changed-badge">变化</span>' : ''}
                 <div class="stock-card-header">
                     <div>
@@ -342,6 +438,12 @@ function renderStocks() {
                     <span class="trend-name">${stock.trend_name || '未知'}</span>
                     <span class="trend-signal" style="background:${stock.signal_color}">${TREND_DESC[stock.trend_code] || stock.signal_text}</span>
                 </div>
+                <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;align-items:center;">
+                    <button onclick="event.stopPropagation(); openGroupSelectModal('${stock.symbol}', '${stock.name}')"
+                        style="padding:4px 10px;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:12px;font-size:11px;cursor:pointer;color:#6b7280;">
+                        📁 加入分组
+                    </button>
+                </div>
                 <div class="stock-updated">${updated}</div>
             </div>
         `;
@@ -349,11 +451,8 @@ function renderStocks() {
 }
 
 function showResultFromList(symbol) {
-    const stock = allStocks.find(s => s.symbol === symbol);
-    if (stock) {
-        document.getElementById('stockInput').value = stock.name;
-        showResult(stock);
-    }
+    // 点击列表中的股票也刷新最新数据
+    refreshStock(symbol);
 }
 
 // ==========================================
@@ -381,7 +480,7 @@ function filterStocksByNames(names) {
         const cardClass = stock.changed ? 'changed' : (isUp ? 'up' : 'down');
         const hasDetail = stock.has_trend_data !== false;
         return `
-            <div class="stock-card ${cardClass}" onclick="goToDetail('${stock.symbol}')">
+            <div class="stock-card ${cardClass}" onclick="refreshStock('${stock.symbol}')">
                 ${stock.changed ? '<span class="changed-badge">变化</span>' : ''}
                 <div class="stock-card-header">
                     <div>
@@ -428,7 +527,7 @@ function setupAutoRefresh() {
 function startAutoRefresh(intervalMs) {
     stopAutoRefresh();
     autoRefreshTimer = setInterval(() => {
-        refreshAll();
+        loadTrends();  // 只加载数据，不触发iFind刷新
     }, intervalMs);
 }
 
@@ -440,7 +539,7 @@ function stopAutoRefresh() {
 }
 
 // ==========================================
-// 标签切换：自选股 / 历史搜索
+// 标签切换：自选股 / 历史搜索 / 分组
 // ==========================================
 let currentTab = 'watchlist';
 
@@ -448,11 +547,15 @@ function switchTab(tab) {
     currentTab = tab;
     document.getElementById('tabWatchlist').classList.toggle('active', tab === 'watchlist');
     document.getElementById('tabHistory').classList.toggle('active', tab === 'history');
+    document.getElementById('tabGroups').classList.toggle('active', tab === 'groups');
     document.getElementById('stocksGrid').style.display = tab === 'watchlist' ? '' : 'none';
     document.getElementById('historyGrid').style.display = tab === 'history' ? '' : 'none';
+    document.getElementById('groupsSection').style.display = tab === 'groups' ? '' : 'none';
 
     if (tab === 'history') {
         loadHistory();
+    } else if (tab === 'groups') {
+        loadGroups();
     }
 }
 
@@ -490,18 +593,24 @@ function renderHistory(history) {
         const hasDetail = stock.has_detail;
 
         return `
-            <div class="stock-card ${isUp ? 'up' : 'down'}" style="border-left-color:${borderColor}" onclick="goToDetail('${stock.symbol}')">
+            <div class="stock-card ${isUp ? 'up' : 'down'}" style="border-left-color:${borderColor}" onclick="refreshStock('${stock.symbol}')">
                 <div class="stock-card-header">
                     <div>
                         <div class="stock-name">${stock.name}</div>
                         <div class="stock-code">${stock.code || stock.symbol}</div>
                     </div>
-                    
+
                 </div>
                 <div class="stock-price ${priceClass}">¥${stock.price > 0 ? stock.price.toFixed(2) : '--'}</div>
                 <div class="stock-trend">
                     <span class="trend-name">${stock.trend_name || '暂无数据'}</span>
                     <span class="trend-signal" style="background:${stock.signal_color}">${TREND_DESC[stock.trend_code] || stock.signal_text}</span>
+                </div>
+                <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;align-items:center;">
+                    <button onclick="event.stopPropagation(); openGroupSelectModal('${stock.symbol}', '${stock.name}')"
+                        style="padding:4px 10px;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:12px;font-size:11px;cursor:pointer;color:#6b7280;">
+                        📁 加入分组
+                    </button>
                 </div>
             </div>
         `;
@@ -510,6 +619,252 @@ function renderHistory(history) {
 
 function goToDetail(symbol) {
     window.location.href = `/trend_detail/${symbol}`;
+}
+
+// ==========================================
+// 分组管理
+// ==========================================
+async function loadGroups() {
+    const container = document.getElementById('groupsList');
+    container.innerHTML = `
+        <div class="loading">
+            <div class="spinner"></div>
+            <span>加载分组...</span>
+        </div>
+    `;
+    try {
+        const resp = await fetch('/api/groups');
+        const data = await resp.json();
+        renderGroups(data.groups || []);
+    } catch (e) {
+        container.innerHTML = `<div class="empty-state">加载失败: ${e.message}</div>`;
+    }
+}
+
+async function createGroup() {
+    const input = document.getElementById('newGroupName');
+    const name = input.value.trim();
+    if (!name) {
+        showToast('请输入分组名称', 'error');
+        return;
+    }
+    try {
+        const resp = await fetch('/api/groups', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+        });
+        const data = await resp.json();
+        if (data.errorcode === 0) {
+            input.value = '';
+            showToast('分组已创建', 'info');
+            loadGroups();
+        } else {
+            showToast(data.errmsg || '创建失败', 'error');
+        }
+    } catch (e) {
+        showToast('创建失败: ' + e.message, 'error');
+    }
+}
+
+async function deleteGroup(groupId) {
+    if (!confirm('确定要删除该分组吗？')) return;
+    try {
+        const resp = await fetch(`/api/groups/${groupId}`, { method: 'DELETE' });
+        const data = await resp.json();
+        if (data.errorcode === 0) {
+            showToast('分组已删除', 'info');
+            loadGroups();
+        } else {
+            showToast(data.errmsg || '删除失败', 'error');
+        }
+    } catch (e) {
+        showToast('删除失败: ' + e.message, 'error');
+    }
+}
+
+function renderGroups(groups) {
+    const container = document.getElementById('groupsList');
+    if (groups.length === 0) {
+        container.innerHTML = `<div class="empty-state">暂无分组<br><span style="font-size:12px;color:#9ca3af;">点击上方"新建分组"创建</span></div>`;
+        return;
+    }
+    container.innerHTML = groups.map(group => `
+        <div style="background:white;border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 1px 4px rgba(0,0,0,0.06);">
+            <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" onclick="toggleGroupExpand('${group.id}', this)">
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span id="groupArrow_${group.id}" style="font-size:14px;transition:transform 0.2s;">▶</span>
+                    <span style="font-weight:600;font-size:15px;">📁 ${group.name}</span>
+                    <span style="font-size:12px;color:#9ca3af;">${group.stocks ? group.stocks.length : 0} 只</span>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <button onclick="event.stopPropagation(); deleteGroup('${group.id}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:13px;" title="删除分组">🗑️</button>
+                </div>
+            </div>
+            <div id="groupStocks_${group.id}" style="display:none;margin-top:12px;" class="group-stocks-grid"></div>
+        </div>
+    `).join('');
+
+    // 加载每个分组的股票数据到隐藏容器
+    groups.forEach(group => {
+        const stocks = group.stocks || [];
+        const stockContainer = document.getElementById(`groupStocks_${group.id}`);
+        if (!stockContainer) return;
+
+        if (stocks.length === 0) {
+            stockContainer.innerHTML = `<span style="font-size:12px;color:#d1d5db;">暂无股票</span>`;
+            return;
+        }
+
+        const stockInfos = stocks.map(symbol => {
+            const found = allStocks.find(s => s.symbol === symbol);
+            if (found) return found;
+            const cached = window._cachedStocks ? window._cachedStocks[symbol] : null;
+            if (cached) return cached;
+            return { symbol, name: symbol, code: '', price: 0, trend_code: '', trend_name: '', signal_color: '#9ca3af', has_trend_data: false };
+        });
+
+        stockInfos.forEach(stock => {
+            const isUp = (stock.trend_code || '').startsWith('up');
+            const priceClass = isUp ? 'up' : 'down';
+            const borderColor = stock.signal_color || '#9ca3af';
+            const trendText = TREND_DESC[stock.trend_code] || stock.signal_text || '未知';
+
+            const el = document.createElement('div');
+            el.className = `stock-card ${isUp ? 'up' : 'down'}`;
+            el.style.cssText = `border-left-color:${borderColor};cursor:pointer;`;
+            el.onclick = () => refreshStock(stock.symbol);
+            el.innerHTML = `
+                <div class="stock-card-header">
+                    <div>
+                        <div class="stock-name" style="cursor:pointer;" onclick="event.stopPropagation(); goToDetail('${stock.symbol}')">${stock.name || stock.symbol}</div>
+                        <div class="stock-code">${stock.code || stock.symbol}</div>
+                    </div>
+                </div>
+                <div class="stock-price ${priceClass}">¥${stock.price > 0 ? stock.price.toFixed(2) : '--'}</div>
+                <div class="stock-trend">
+                    <span class="trend-name">${stock.trend_name || '暂无数据'}</span>
+                    <span class="trend-signal" style="background:${stock.signal_color}">${trendText}</span>
+                </div>
+                <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;align-items:center;">
+                    <button onclick="event.stopPropagation(); openGroupSelectModal('${stock.symbol}', '${stock.name}')"
+                        style="padding:4px 10px;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:12px;font-size:11px;cursor:pointer;color:#6b7280;">
+                        📁 加入分组
+                    </button>
+                </div>
+            `;
+            stockContainer.appendChild(el);
+        });
+    });
+}
+
+function toggleGroupExpand(groupId, headerEl) {
+    const stockContainer = document.getElementById(`groupStocks_${groupId}`);
+    const arrow = document.getElementById(`groupArrow_${groupId}`);
+    if (!stockContainer) return;
+
+    const isHidden = stockContainer.style.display === 'none';
+    if (isHidden) {
+        stockContainer.style.display = '';
+        arrow.textContent = '▼';
+    } else {
+        stockContainer.style.display = 'none';
+        arrow.textContent = '▶';
+    }
+}
+
+// ==========================================
+// 分组选择弹窗
+// ==========================================
+let _pendingAddSymbol = null;
+
+async function openGroupSelectModal(symbol, stockName) {
+    _pendingAddSymbol = symbol;
+    const modal = document.getElementById('groupSelectModal');
+    const title = document.getElementById('groupModalTitle');
+    const body = document.getElementById('groupModalBody');
+
+    title.textContent = `加入分组 - ${stockName || symbol}`;
+    body.innerHTML = `<div class="loading"><div class="spinner"></div><span>加载分组...</span></div>`;
+    modal.classList.add('active');
+
+    try {
+        const resp = await fetch('/api/groups');
+        const data = await resp.json();
+        const groups = data.groups || [];
+
+        if (groups.length === 0) {
+            body.innerHTML = `
+                <p style="text-align:center;color:#9ca3af;padding:20px 0;">暂无分组</p>
+                <div style="text-align:center;">
+                    <input type="text" id="quickGroupName" placeholder="新建分组名称..." style="padding:6px 12px;border:1px solid #e5e7eb;border-radius:20px;font-size:13px;outline:none;width:60%;" />
+                    <button onclick="quickCreateAndAdd()" style="padding:6px 14px;background:#1a73e8;color:white;border:none;border-radius:20px;font-size:13px;cursor:pointer;margin-top:8px;">创建并添加</button>
+                </div>
+            `;
+            return;
+        }
+
+        body.innerHTML = groups.map(g => {
+            const inGroup = g.stocks && g.stocks.includes(symbol);
+            return `
+                <div class="modal-row" style="cursor:pointer;border-bottom:1px solid #f3f4f6;padding:10px 0;" onclick="addToGroup('${g.id}', '${symbol}', this)">
+                    <span class="modal-label">📁 ${g.name}</span>
+                    <span class="modal-value" style="color:${inGroup ? '#16a34a' : '#9ca3af'};">${inGroup ? '✓ 已添加' : '+ 添加'}</span>
+                </div>
+            `;
+        }).join('');
+    } catch (e) {
+        body.innerHTML = `<div class="empty-state">加载失败: ${e.message}</div>`;
+    }
+}
+
+async function quickCreateAndAdd() {
+    const name = document.getElementById('quickGroupName').value.trim();
+    if (!name) return;
+    try {
+        const resp = await fetch('/api/groups', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+        });
+        const data = await resp.json();
+        if (data.errorcode === 0 && _pendingAddSymbol) {
+            await addToGroup(data.group.id, _pendingAddSymbol);
+            closeGroupModal();
+            showToast('已创建并添加', 'info');
+            loadGroups();
+        }
+    } catch (e) {}
+}
+
+async function addToGroup(groupId, symbol, rowEl) {
+    try {
+        const resp = await fetch(`/api/groups/${groupId}/add`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbol })
+        });
+        const data = await resp.json();
+        if (data.errorcode === 0) {
+            if (rowEl) {
+                rowEl.querySelector('.modal-value').textContent = '✓ 已添加';
+                rowEl.querySelector('.modal-value').style.color = '#16a34a';
+            }
+            showToast('已添加到分组', 'info');
+            // 刷新分组数据
+            if (currentTab === 'groups') loadGroups();
+        } else {
+            showToast(data.errmsg || '添加失败', 'error');
+        }
+    } catch (e) {
+        showToast('添加失败', 'error');
+    }
+}
+
+function closeGroupModal(event) {
+    if (event && event.target !== event.currentTarget) return;
+    document.getElementById('groupSelectModal').classList.remove('active');
+    _pendingAddSymbol = null;
 }
 
 // ==========================================

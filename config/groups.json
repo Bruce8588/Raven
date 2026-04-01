@@ -1,0 +1,18 @@
+{
+  "groups": [
+    {
+      "id": "group_a99dcbd3",
+      "name": "持仓股",
+      "stocks": [
+        "sh002129"
+      ]
+    },
+    {
+      "id": "group_0e512aab",
+      "name": "分组1",
+      "stocks": [
+        "sz002595"
+      ]
+    }
+  ]
+}

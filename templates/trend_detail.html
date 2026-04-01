@@ -367,25 +367,6 @@
 
         @keyframes spin { to { transform: rotate(360deg); } }
 
-        /* 图例 */
-        .legend-bar {
-            display: flex;
-            gap: 16px;
-            flex-wrap: wrap;
-            padding: 12px 16px;
-            background: var(--card-bg);
-            border-radius: 10px;
-            margin-bottom: 12px;
-            font-size: 12px;
-        }
-
-        .legend-item { display: flex; align-items: center; gap: 6px; }
-        .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
-        .legend-dot.up { background: var(--up-color); }
-        .legend-dot.up-break { background: var(--up-break-color); }
-        .legend-dot.down { background: var(--down-color); }
-        .legend-dot.down-break { background: var(--down-break-color); }
-
         /* Toast */
         .toast {
             position: fixed;
@@ -565,6 +546,8 @@
             <div class="config-grid" id="configGrid"></div>
         </div>
 
+
+
         <!-- 滑条 + 每分钟数据区块 -->
         <div class="minute-section" id="minuteSection" style="display:none;">
             <div class="slider-header">
@@ -651,6 +634,8 @@
         }
     }
 
+
+
     function renderHeader(data) {
         const header = document.getElementById('stockHeader');
         const trendCode = data.current_trend_code || '';
@@ -724,6 +709,22 @@
         'down_break': ['n_high', 'break_high'],
     };
 
+    // 上升/下跌体系的所有关键点（用于配置信息和图表）
+    const UP_SYSTEM_ALL_KPS = [
+        { kp: 'key_high',      label: '上升趋势' },
+        { kp: 'n_low',         label: '自然回撤' },
+        { kp: 'rally_high',    label: '回升' },
+        { kp: 'secondary_low', label: '次级回撤' },
+        { kp: 'break_low',     label: '上升破碎' },
+    ];
+    const DOWN_SYSTEM_ALL_KPS = [
+        { kp: 'key_low',       label: '下跌趋势' },
+        { kp: 'n_high',        label: '自然回升' },
+        { kp: 'rally_low',     label: '回撤' },
+        { kp: 'secondary_high', label: '次级回升' },
+        { kp: 'break_high',    label: '下跌破碎' },
+    ];
+
     const KP_LABELS = {
         'key_high': 'key_high', 'key_low': 'key_low',
         'n_low': 'n_low', 'n_high': 'n_high',
@@ -750,16 +751,19 @@
 
         const trendClass = config.config_trend && config.config_trend.startsWith('up') ? 'up' : 'down';
 
-        // 只展示当前趋势需要的相关关键点
-        const neededKps = TREND_KEYPOINTS[currentTrendCode] || [];
+        // 确定当前趋势所属体系，展示体系中所有关键点
+        const isUp = currentTrendCode && currentTrendCode.startsWith('up') && currentTrendCode !== 'down';
+        const isDown = currentTrendCode && currentTrendCode.startsWith('down');
+        const systemKps = isUp ? UP_SYSTEM_ALL_KPS : (isDown ? DOWN_SYSTEM_ALL_KPS : []);
 
         const items = [
             { label: 'config_date', value: config.config_date || '--' },
             { label: 'config_trend', value: config.config_trend || '--', trendClass: trendClass },
         ];
 
-        for (const kp of neededKps) {
-            items.push({ label: KP_LABELS[kp] || kp, value: fmt(config[kp]) });
+        // 展示当前体系的所有关键点
+        for (const kpInfo of systemKps) {
+            items.push({ label: kpInfo.label, value: fmt(config[kpInfo.kp]) });
         }
 
         grid.innerHTML = items.map(item => `
@@ -990,27 +994,14 @@
     };
 
     function renderEmpty(msg) {
-        const stockHeader = document.getElementById('stockHeader');
-        if (stockHeader) {
-            stockHeader.innerHTML = `
-                <div class="empty-state">
-                    <div class="empty-icon">📊</div>
-                    <div>${msg}</div>
-                </div>
-            `;
-        }
-        const trendsGrid = document.getElementById('trendsGrid');
-        if (trendsGrid) {
-            trendsGrid.innerHTML = '';
-        }
-        const configSection = document.getElementById('configSection');
-        if (configSection) {
-            configSection.style.display = 'none';
-        }
-        const minuteSection = document.getElementById('minuteSection');
-        if (minuteSection) {
-            minuteSection.style.display = 'none';
-        }
+        document.getElementById('stockHeader').innerHTML = `
+            <div class="empty-state">
+                <div class="empty-icon">📊</div>
+                <div>${msg}</div>
+            </div>
+        `;
+        document.getElementById('configSection').style.display = 'none';
+        document.getElementById('minuteSection').style.display = 'none';
     }
 
     function showRecordDetail(index, trendKey) {

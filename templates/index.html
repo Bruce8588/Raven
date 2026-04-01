@@ -11,6 +11,7 @@
             display: flex;
             gap: 8px;
             padding: 4px 0;
+            flex-wrap: wrap;
         }
 
         .tab-btn {
@@ -35,8 +36,54 @@
             color: white;
         }
 
+        /* 弹窗 */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.4);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal {
+            background: white;
+            border-radius: 16px;
+            padding: 24px;
+            max-width: 400px;
+            width: 90%;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+        .modal-title { font-size: 16px; font-weight: 600; }
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: #6b7280;
+            line-height: 1;
+        }
+        .modal-body { font-size: 13px; line-height: 1.8; }
+        .modal-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #f3f4f6; }
+        .modal-row:last-child { border-bottom: none; }
+        .modal-label { color: #6b7280; }
+        .modal-value { font-weight: 500; }
+        .modal-row[style*="cursor:pointer"]:hover .modal-value { color: #1a73e8; }
+
         /* 嵌入字体，避免加载失败 */
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&display=swap');
+        .group-stocks-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 12px;
+        }
     </style>
 </head>
 <body>
@@ -113,6 +160,7 @@
             <div class="tab-bar" style="margin-bottom:12px;">
                 <button class="tab-btn active" id="tabWatchlist" onclick="switchTab('watchlist')">📋 自选股</button>
                 <button class="tab-btn" id="tabHistory" onclick="switchTab('history')">🕐 历史搜索</button>
+                <button class="tab-btn" id="tabGroups" onclick="switchTab('groups')">📁 分组</button>
             </div>
             <!-- 第一行：十大趋势 -->
             <div class="filter-bar">
@@ -137,6 +185,14 @@
             <div class="stocks-grid" id="stocksGrid"></div>
             <!-- 历史搜索网格 -->
             <div class="stocks-grid" id="historyGrid" style="display:none;"></div>
+            <!-- 分组网格 -->
+            <div id="groupsSection" style="display:none;">
+                <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <input type="text" id="newGroupName" placeholder="新分组名称..." style="padding:6px 12px;border:1px solid #e5e7eb;border-radius:20px;font-size:13px;outline:none;" />
+                    <button class="btn-query" style="padding:6px 16px;font-size:13px;" onclick="createGroup()">+ 新建分组</button>
+                </div>
+                <div id="groupsList"></div>
+            </div>
         </section>
 
         <!-- 页脚 -->
@@ -144,6 +200,17 @@
             <span>Raven 股票趋势追踪系统</span>
             <span id="dataSource">数据来源: iFinD / 模拟</span>
         </footer>
+    </div>
+
+    <!-- 分组选择弹窗 -->
+    <div class="modal-overlay" id="groupSelectModal" onclick="closeGroupModal(event)">
+        <div class="modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <span class="modal-title" id="groupModalTitle">加入分组</span>
+                <button class="modal-close" onclick="closeGroupModal()">×</button>
+            </div>
+            <div class="modal-body" id="groupModalBody"></div>
+        </div>
     </div>
 
     <script src="/static/js/main.js"></script>
