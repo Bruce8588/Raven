@@ -626,7 +626,7 @@
 
             renderHeader(data);
             renderConfigInfo(data.config_info, data.current_trend_code);
-            minuteRecords = data.records || [];  // 使用趋势历史记录作为分钟数据（含趋势信息）
+            minuteRecords = data.minute_records || data.records || [];  // 优先用每分钟完整数据
             renderMinuteSection(minuteRecords);
 
         } catch (e) {
@@ -791,7 +791,7 @@
         const total = records.length;
         slider.max = total - 1;
         slider.min = 0;
-        slider.value = total - 1;
+        slider.value = total;  // 默认显示全部记录（slider在最右=最大值）
 
         const firstTime = formatMinuteTime(records[0].time);
         const lastTime = formatMinuteTime(records[records.length - 1].time);
@@ -805,7 +805,18 @@
         };
 
         function getTrendKp(rec, trend) {
-            const kpName = KP_FROM_TREND[trend];
+            // API返回两种格式：
+            // 1. records (趋势变化点): 有 remark 字段（中文列名）
+            // 2. minute_records (每分钟): 有 trend_code，直接查中文列名
+            const remark = rec.remark;
+            let kpName;
+            if (remark) {
+                // 格式1：用 remark 直接取值
+                kpName = remark;
+            } else {
+                // 格式2：用 trend_code 查映射表
+                kpName = KP_FROM_TREND[trend] || '';
+            }
             if (!kpName) return '--';
             const v = rec[kpName];
             return (v != null && !isNaN(v)) ? v.toFixed(2) : '--';
@@ -890,7 +901,9 @@
             const remark = rec.remark;
             const trendKey = CHINESE_TO_TREND[remark];
             if (trendKey) {
-                const kpValue = rec[trendKey];
+                // API返回的字段是中文列名（如'自然回升'），不是英文trend_key
+                // 所以直接用 remark 的值来取
+                const kpValue = rec[remark];
                 timeMap[t][trendKey] = { record: rec, kpName: remark, kpValue: kpValue };
             }
         }

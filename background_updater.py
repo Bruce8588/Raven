@@ -32,15 +32,17 @@ except ImportError as e:
 class BackgroundUpdater:
     """后台定期更新已搜索股票"""
     
-    def __init__(self, interval: int = 300, config_path: str = None):
+    def __init__(self, interval: int = 300, quick_interval: int = 30, config_path: str = None):
         """
         Args:
-            interval: 更新间隔（秒），默认300秒（5分钟）
+            interval: 完整更新间隔（秒），默认300秒（5分钟）
+            quick_interval: 快速价格更新间隔（秒），默认30秒
             config_path: 初始配置CSV路径
         """
         self.cache = StockCache()
         self.fetcher = IFinDFetcher()
         self.interval = interval
+        self.quick_interval = quick_interval
         self.running = False
         self._thread = None
         
@@ -68,40 +70,63 @@ class BackgroundUpdater:
         Returns:
             分析后的数据字典，如果失败返回None
         """
-        # 从watchlist获取股票代码
+        # 从watchlist获取股票代码（支持不在watchlist中的分组股票）
         watchlist_path = os.path.join(BASE_DIR, "config", "watchlist.json")
-        if not os.path.exists(watchlist_path):
-            print(f"  [后台更新] watchlist.json 不存在")
-            return None
         
-        with open(watchlist_path, "r", encoding="utf-8") as f:
-            watchlist = json.load(f)
-        
-        # 兼容不同watchlist格式
         info = None
         code = None
+        name = symbol
+        code_raw = ""
+        market = ""
         
-        # 格式1: key是symbol如 "sh002129"
-        if symbol in watchlist:
-            info = watchlist[symbol]
-            code = info.get("code", "")
+        # 优先从watchlist查找
+        if os.path.exists(watchlist_path):
+            with open(watchlist_path, "r", encoding="utf-8") as f:
+                watchlist = json.load(f)
+            
+            # 格式1: key是symbol如 "sh002129"
+            if symbol in watchlist:
+                info = watchlist[symbol]
+                code = info.get("code", "")
+            
+            # 格式2: key是纯代码
+            if info is None:
+                for k, v in watchlist.items():
+                    if v.get("code") == symbol:
+                        info = v
+                        code = symbol
+                        symbol = k
+                        break
         
-        # 格式2: key是纯代码
+        # 如果不在watchlist中，从名称映射表查找（支持分组中的股票）
         if info is None:
-            for k, v in watchlist.items():
-                if v.get("code") == symbol:
-                    info = v
-                    code = symbol
-                    symbol = k
-                    break
-        
-        if info is None:
-            print(f"  [后台更新] 未找到股票 {symbol} 的配置")
-            return None
-        
-        name = info.get("name", symbol)
-        code_raw = info.get("code", "")
-        market = info.get("market", "")
+            stocks_mapping_path = os.path.join(BASE_DIR, "config", "stocks_name_mapping_full.json")
+            if os.path.exists(stocks_mapping_path):
+                with open(stocks_mapping_path, "r", encoding="utf-8") as f:
+                    stocks_mapping = json.load(f)
+                
+                # symbol格式: "sh601899" -> code="601899", market="SH"
+                market_prefix = symbol[:2].lower()
+                code_raw_fallback = symbol[2:]
+                market_key = "SH" if market_prefix == "sh" else "SZ"
+                
+                # 在stocks_mapping中查找 (key是纯代码)
+                if code_raw_fallback in stocks_mapping:
+                    sm = stocks_mapping[code_raw_fallback]
+                    name = sm.get("name", code_raw_fallback)
+                    code_raw = code_raw_fallback
+                    market = sm.get("market", market_key)
+                    code = code_raw
+                else:
+                    print(f"  [后台更新] 未找到股票 {symbol} 的任何配置，跳过")
+                    return None
+            else:
+                print(f"  [后台更新] 未找到股票 {symbol} 的配置，跳过")
+                return None
+        else:
+            name = info.get("name", symbol)
+            code_raw = info.get("code", "")
+            market = info.get("market", "")
         
         # 转换代码格式：sz/sh前缀 -> iFinD格式
         code_ifind = self._convert_code(code_raw, market)
@@ -369,30 +394,101 @@ class BackgroundUpdater:
         print("[后台更新] 已停止")
     
     def _run(self):
-        """后台更新循环"""
+        """后台更新循环：快速价格模式 + 完整趋势分析模式"""
         import pandas as pd  # 用于CSV读写
+        elapsed = 0  # 距离上次完整更新的秒数
+        
         while self.running:
             try:
-                self.update_all()
+                if elapsed >= self.interval:
+                    # 完整更新：获取数据 + 运行趋势分析
+                    print(f"[后台更新] >>> 完整趋势分析 (距上次 {elapsed} 秒)")
+                    self.update_all()
+                    elapsed = 0
+                else:
+                    # 快速价格模式：只获取最新价格，不做趋势分析
+                    self._update_prices_quick()
             except Exception as e:
                 print(f"[后台更新] 更新过程出错: {e}")
             
             # 分段睡眠，支持快速停止
-            for _ in range(self.interval):
+            for _ in range(self.quick_interval):
                 if not self.running:
                     break
                 time.sleep(1)
+            elapsed += self.quick_interval
+
+    def _update_prices_quick(self):
+        """快速价格更新：只获取最新价格，不运行趋势分析"""
+        searched = self.cache.get_searched()
+        if not searched:
+            return
+        
+        print(f"[快速更新] 更新 {len(searched)} 只股票价格...")
+        success = 0
+        for symbol in searched:
+            try:
+                # 获取缓存中的现有数据（保留趋势分析结果）
+                existing = self.cache.get(symbol) or {}
+                
+                # 如果缓存条目为空或不完整（缺 name 字段），跳过快速更新，避免覆盖成残缺数据
+                if not existing.get("name"):
+                    # 缓存条目为空（可能是 Flask 重启后首次运行），立即触发单只完整分析
+                    # 而不是跳过等待完整更新周期，避免用户看到空数据
+                    print(f"  [快速更新] {symbol} 缓存为空，触发即时完整分析...")
+                    self._fetch_and_analyze(symbol)
+                    continue
+                
+                # 从watchlist获取股票代码
+                watchlist_path = os.path.join(BASE_DIR, "config", "watchlist.json")
+                if not os.path.exists(watchlist_path):
+                    continue
+                
+                with open(watchlist_path, "r", encoding="utf-8") as f:
+                    watchlist = json.load(f)
+                
+                info = watchlist.get(symbol, {})
+                code_raw = info.get("code", "")
+                market = info.get("market", "")
+                name = info.get("name", symbol)
+                
+                if not code_raw:
+                    continue
+                
+                # 快速获取最新价格（只取1天数据，减少API调用时间）
+                code_ifind = self._convert_code(code_raw, market)
+                df = self.fetcher.get_minute_data(code_ifind, days=1)
+                
+                if df is not None and not df.empty:
+                    current_price = float(df.iloc[-1]["close"])
+                    
+                    # 只更新价格相关字段，保留现有的趋势分析结果
+                    existing["price"] = current_price
+                    existing["update_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    self.cache.set(symbol, existing)
+                    success += 1
+                    
+                time.sleep(0.5)  # 避免请求过快
+            except Exception as e:
+                print(f"  [快速更新] {symbol} 价格更新失败: {e}")
+        
+        print(f"[快速更新] 完成: {success}/{len(searched)} 只")
 
 
 # 便捷函数：创建并启动后台更新器
 _default_updater = None
 
 
-def start_background_updater(interval: int = 300):
-    """启动默认的后台更新器"""
+def start_background_updater(interval: int = 300, quick_interval: int = 30):
+    """启动默认的后台更新器
+    
+    Args:
+        interval: 完整更新间隔（秒），默认300秒（5分钟）
+        quick_interval: 快速价格更新间隔（秒），默认30秒
+    """
     global _default_updater
     if _default_updater is None:
-        _default_updater = BackgroundUpdater(interval=interval)
+        _default_updater = BackgroundUpdater(interval=interval, quick_interval=quick_interval)
     _default_updater.start()
     return _default_updater
 

@@ -30,7 +30,7 @@ from cache import StockCache
 stock_cache = StockCache()
 
 # 导入后台更新模块
-from background_updater import BackgroundUpdater, start_background_updater, stop_background_updater
+# background_updater 已迁移到独立进程 run_tracker.py
 
 # 输出目录
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
@@ -192,11 +192,15 @@ def _fetch_stock_unknown(stock_name: str) -> dict | None:
     尝试从iFind获取未知股票（不在自选股名单中）
     stock_name: 可能是股票名称或代码
     返回分析后的数据字典，失败返回None
+    注意：只有存在于 initial_configs.csv 的股票才能被搜索
     """
     try:
         from fetcher.ifind import IFinDFetcher
         from core.analyzer import MarketTrendAnalyzer
         from core.config.rules import TREND_NAMES
+        
+        # 初始化分析器（用于检查股票是否在配置表中）
+        analyzer = MarketTrendAnalyzer(os.path.join(BASE_DIR, "config", "initial_configs.csv"))
         
         # 检查是否像股票代码（6位数字）
         is_code = stock_name.isdigit() and len(stock_name) == 6
@@ -204,6 +208,7 @@ def _fetch_stock_unknown(stock_name: str) -> dict | None:
         # 先尝试按名称查找（从映射表）
         actual_name = stock_name  # 保存原始输入的名称
         market_from_mapping = None  # 从映射表获取的market
+        resolved_code = None  # 解析后的股票代码（用于配置检查）
         if not is_code:
             stocks_mapping = _load_stocks_mapping()
             for code, info in stocks_mapping.items():
@@ -227,6 +232,13 @@ def _fetch_stock_unknown(stock_name: str) -> dict | None:
                 market_list = [(market_from_mapping, f".{market_from_mapping}"), (other, f".{other}")]
             else:
                 market_list = [("SH", ".SH"), ("SZ", ".SZ")]
+            
+            # 先检查股票是否在配置表中（尝试两个市场）
+            in_config = any(analyzer.get_stock_config(f"{market_name.lower()}{code}") is not None
+                           for market_name, _ in market_list)
+            if not in_config:
+                print(f"[_fetch_stock_unknown] {code} 不在配置表中，跳过搜索")
+                return None
             
             for market_name, suffix in market_list:
                 try:
@@ -777,8 +789,28 @@ def api_trends():
                 })
 
     # 补充：缓存中已搜索但不在自选股的股票
+    # 构建 (market, code) -> info 的反向索引（避免依赖 symbol 前缀猜测市场）
+    stocks_mapping = _load_stocks_mapping()
+    market_code_index = {}
+    for code, info in stocks_mapping.items():
+        key = (info.get('market', '').upper(), info.get('code', ''))
+        market_code_index[key] = info
+    
     for symbol, entry in cache_data.items():
         if symbol not in watchlist:
+            # 如果缓存条目为空或不完整（缺 name 字段），从名称映射表填充基本信息
+            entry = dict(entry)  # 复制，避免修改原始缓存
+            if not entry.get('name'):
+                market_prefix = symbol[:2].lower()  # 'sh' or 'sz'
+                code_from_symbol = symbol[2:]  # 去掉 sh/sz 前缀
+                market_key = 'SH' if market_prefix == 'sh' else 'SZ'
+                lookup_key = (market_key, code_from_symbol)
+                info = market_code_index.get(lookup_key)
+                if info:
+                    entry['name'] = info.get('name', code_from_symbol)
+                    entry['code'] = code_from_symbol
+                    entry['market'] = market_key
+            
             signal = get_signal(entry.get('trend_code', ''))
             result.append({
                 "symbol": symbol,
@@ -1727,7 +1759,8 @@ if __name__ == '__main__':
     print("🌐 启动服务器: http://localhost:5000")
     print("=" * 50)
     
-    # 启动后台更新器（5分钟间隔）
-    start_background_updater(interval=300)
+    # 注意：后台更新器已迁移到独立进程 run_tracker.py
+    # 启动命令: python3 run_tracker.py
+    # 这样可避免 Flask 重启时中断后台更新，保证 cache 写入完整性
     
-    app.run(host='0.0.0.0', port=5019, debug=True, threaded=True)
+    app.run(host='0.0.0.0', port=5019, debug=False, threaded=True)

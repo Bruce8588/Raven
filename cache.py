@@ -39,10 +39,13 @@ class StockCache:
             return {}
     
     def _save_cache(self, data: dict):
-        """保存缓存文件（线程安全）"""
+        """保存缓存文件（原子写入，防止多进程并发写导致 JSON 损坏）"""
         with _cache_lock:
-            with open(self.cache_file, "w", encoding="utf-8") as f:
+            # 原子写入：先写临时文件，再 rename（操作系统保证原子性）
+            tmp_file = self.cache_file + ".tmp"
+            with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+            os.replace(tmp_file, self.cache_file)  # 原子替换
     
     def _load_searched(self) -> list:
         """加载已搜索股票列表（线程安全）"""
@@ -56,10 +59,12 @@ class StockCache:
             return []
     
     def _save_searched(self, data: list):
-        """保存已搜索股票列表（线程安全）"""
+        """保存已搜索股票列表（原子写入，防止多进程并发写）"""
         with _cache_lock:
-            with open(self.searched_file, "w", encoding="utf-8") as f:
+            tmp_file = self.searched_file + ".tmp"
+            with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_file, self.searched_file)
     
     def get(self, symbol: str) -> Optional[dict]:
         """获取缓存数据，如果存在且未过期则返回，否则返回None"""

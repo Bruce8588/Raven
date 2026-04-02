@@ -25,10 +25,12 @@ let lastFetchTime = null;
 // ==========================================
 // 初始化
 // ==========================================
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     checkTokenStatus();
-    loadTrends();        // 只加载已有数据，不刷新
+    await loadTrends();  // 必须等待数据加载完成，再恢复 tab
     setupAutoRefresh();
+    // 恢复上次停留的 tab（避免返回后回到自选股）
+    switchTab(currentTab);
 });
 
 // ==========================================
@@ -541,10 +543,11 @@ function stopAutoRefresh() {
 // ==========================================
 // 标签切换：自选股 / 历史搜索 / 分组
 // ==========================================
-let currentTab = 'watchlist';
+let currentTab = localStorage.getItem('raven_currentTab') || 'watchlist';
 
 function switchTab(tab) {
     currentTab = tab;
+    localStorage.setItem('raven_currentTab', tab);  // 持久化，用户返回时不会丢失
     document.getElementById('tabWatchlist').classList.toggle('active', tab === 'watchlist');
     document.getElementById('tabHistory').classList.toggle('active', tab === 'history');
     document.getElementById('tabGroups').classList.toggle('active', tab === 'groups');
